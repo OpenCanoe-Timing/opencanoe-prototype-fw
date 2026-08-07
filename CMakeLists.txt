@@ -37,6 +37,16 @@ add_executable(${CMAKE_PROJECT_NAME})
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
+# Remove CubeMX default syscall implementations
+get_target_property(MX_SOURCES ${CMAKE_PROJECT_NAME} SOURCES)
+
+list(FILTER MX_SOURCES EXCLUDE REGEX ".*syscalls\\.c$")
+list(FILTER MX_SOURCES EXCLUDE REGEX ".*sysmem\\.c$")
+
+set_property(TARGET ${CMAKE_PROJECT_NAME}
+    PROPERTY SOURCES "${MX_SOURCES}"
+)
+
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
@@ -44,7 +54,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/rtc.c
 )
 
 # Add include paths
