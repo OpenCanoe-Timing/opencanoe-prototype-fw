@@ -1,0 +1,93 @@
+# ==========================
+# CMake
+# ==========================
+
+build/
+cmake-build-*/
+
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CTestTestfile.cmake
+cmake_install.cmake
+install_manifest.txt
+CMakeLists.txt.user
+CMakeUserPresets.json
+
+# CMake FetchContent dependencies
+_deps/
+
+# Generated compile database
+compile_commands.json
+
+# Testing
+Testing/
+
+
+# ==========================
+# Build output
+# ==========================
+
+*.o
+*.obj
+*.d
+*.su
+
+*.elf
+*.hex
+*.bin
+*.map
+
+# Libraries
+*.a
+*.lib
+*.la
+*.lo
+
+# Shared libraries
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+
+
+# ==========================
+# Debug / profiling
+# ==========================
+
+*.dSYM/
+*.pdb
+*.idb
+*.dwo
+
+
+# ==========================
+# IDEs
+# ==========================
+
+# VS Code
+.vscode/
+
+# CLion
+.idea/
+cmake-build-*/
+
+
+# ==========================
+# OS files
+# ==========================
+
+.DS_Store
+Thumbs.db
+
+
+# ==========================
+# VS Code extensions
+# ==========================
+
+*.vsix
