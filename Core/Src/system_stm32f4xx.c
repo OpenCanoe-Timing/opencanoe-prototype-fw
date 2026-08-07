@@ -1,33 +1,22 @@
 /**
   ******************************************************************************
   * @file    system_stm32f4xx.c
-  * @author  MCD Application Team
-  * @brief   CMSIS Cortex-M4 Device Peripheral Access Layer System Source File.
+  * @brief   CMSIS system source support.
   *
-  *   This file provides two functions and one global variable to be called from 
-  *   user application:
-  *      - SystemInit(): This function is called at startup just after reset and 
-  *                      before branch to main program. This call is made inside
-  *                      the "startup_stm32f4xx.s" file.
+  * @author  Alexander Ellul
   *
-  *      - SystemCoreClock variable: Contains the core clock (HCLK), it can be used
-  *                                  by the user application to setup the SysTick 
-  *                                  timer or configure other parameters.
-  *                                     
-  *      - SystemCoreClockUpdate(): Updates the variable SystemCoreClock and must
-  *                                 be called whenever the core clock is changed
-  *                                 during program execution.
+  * @copyright
+  * Copyright (c) 2026 Alexander Ellul.
   *
+  * SPDX-License-Identifier: GPL-3.0-only
   *
-  ******************************************************************************
-  * @attention
+  * This file is part of the OpenCanoe Timing System prototype firmware.
   *
-  * Copyright (c) 2017 STMicroelectronics.
-  * All rights reserved.
+  * This software is licensed under the GNU General Public License v3.0.
+  * See the LICENSE.md file in the root directory of this project for details.
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * This software is provided "AS IS", WITHOUT WARRANTY OF ANY KIND,
+  * either expressed or implied.
   *
   ******************************************************************************
   */
