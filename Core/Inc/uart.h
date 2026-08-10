@@ -1,7 +1,7 @@
 /**
- * @file rtc.c
+ * @file uart.h
  * @author Alexander Ellul (igsalexcodes@gmail.com)
- * @brief Timebase for the application.
+ * @brief UART Communication header for the application.
  * 
  * @copyright
  * Copyright (c) 2026 Alexander Ellul.
@@ -18,17 +18,17 @@
  * 
  */
 
-#include "stm32f4xx_hal.h"
-#include "stm32f4xx_hal_tim.h"
-#include "rtc.h"
+#ifndef UART_H
+#define UART_H
 
-extern TIM_HandleTypeDef htim2;
+#include <stdint.h>
+#include <stdbool.h>
 
+typedef enum
+{
+    COMPUTER_UART
+} UART_Port_t;
 
-/**
- * @brief Initalise the timing system.
- * 
- */
-void initalise_timer(void) {
-	HAL_TIM_Base_Start(&htim2);
-}
+bool UART_Write(UART_Port_t uart, const uint8_t *data, uint16_t length);
+
+#endif

@@ -55,6 +55,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/rtc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/uart.c
 )
 
 # Add include paths
