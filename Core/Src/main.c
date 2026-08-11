@@ -26,7 +26,9 @@
 /* USER CODE BEGIN Includes */
 
 #include "rtc.h"
+#include "stm32f4xx_hal.h"
 #include "uart.h"
+#include <stdint.h>
 
 /* USER CODE END Includes */
 
@@ -84,6 +86,8 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
+  uint8_t healthy_status[] = "System is healthy\r\n";
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -123,6 +127,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    UART_Write(COMPUTER_UART, healthy_status, sizeof(healthy_status) - 1);
+    HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -283,7 +289,7 @@ static void MX_TIM2_Init(void)
   }
   sSlaveConfig.SlaveMode = TIM_SLAVEMODE_RESET;
   sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
-  sSlaveConfig.TriggerPolarity = TIM_TRIGGERPOLARITY_RISING;
+  sSlaveConfig.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
   sSlaveConfig.TriggerFilter = 0;
   if (HAL_TIM_SlaveConfigSynchro(&htim2, &sSlaveConfig) != HAL_OK)
   {
@@ -299,6 +305,10 @@ static void MX_TIM2_Init(void)
   sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
   sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
