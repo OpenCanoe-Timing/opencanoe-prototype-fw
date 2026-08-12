@@ -36,7 +36,7 @@ static const char impulse_string[] = "Impulse on %c\r\n";
  * @brief Initalise the timing system.
  * 
  */
-void initalise_timer(void) {
+void TIM_Init(void) {
 	HAL_TIM_Base_Start(&htim2);
 	HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2);
 	HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3);

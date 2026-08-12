@@ -26,7 +26,7 @@ extern "C" {
 
 #include <stdint.h>
 
-void initalise_timer(void);
+void TIM_Init(void);
 
 #ifdef __cplusplus
 }
