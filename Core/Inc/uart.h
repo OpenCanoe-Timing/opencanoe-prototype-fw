@@ -21,24 +21,37 @@
 #ifndef UART_H
 #define UART_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
-/**
- * @brief Logical UART ports available to the application.
- *
- * Each port maps to a physical HAL UART handle and gets its own
- * independent DMA transmit queue.
- */
-typedef enum
-{
-    COMPUTER_UART,
-    GNSS_UART,
+typedef enum {
+  COMPUTER_UART,
+  GNSS_UART,
 
-    UART_PORT_COUNT  
+  UART_PORT_COUNT
 
 } UART_Port_t;
 
+/**
+ * @brief UART receive callback type.
+ *
+ * Called with a chunk of newly received bytes. The chunk is
+ * bounded either by an idle-line gap on the wire (e.g. the
+ * pause between NMEA sentences) or by the receive buffer
+ * wrapping around, whichever comes first. The data pointer
+ * is only valid for the duration of the call.
+ *
+ * @param uart UART port the data was received on.
+ * @param data Pointer to the received bytes.
+ * @param length Number of bytes received.
+ */
+typedef void (*UART_RxCallback_t)(UART_Port_t uart, const uint8_t *data,
+                                  uint16_t length);
+
+void UART_Init(void);
+
 bool UART_Write(UART_Port_t uart, const uint8_t *data, uint16_t length);
+
+bool UART_RegisterRxCallback(UART_Port_t uart, UART_RxCallback_t callback);
 
 #endif
