@@ -29,9 +29,9 @@
  */
 typedef struct {
   uint8_t hours;        /**< 0-23 */
-  uint8_t minutes;       /**< 0-59 */
-  uint8_t seconds;        /**< 0-59 */
-  uint16_t milliseconds;  /**< 0-999, from the fractional seconds field */
+  uint8_t minutes;      /**< 0-59 */
+  uint8_t seconds;      /**< 0-59 */
+  uint16_t milliseconds; /**< 0-999 */
 } GNSS_Time_t;
 
 /**
@@ -42,7 +42,7 @@ typedef struct {
  */
 typedef struct {
   uint8_t day;    /**< 1-31 */
-  uint8_t month;   /**< 1-12 */
+  uint8_t month;  /**< 1-12 */
   uint16_t year;  /**< e.g. 2026 */
 } GNSS_Date_t;
 
@@ -53,31 +53,24 @@ typedef struct {
   GNSS_Time_t time;
   GNSS_Date_t date;
 
-  /** True if the fix was reported valid ('A') in the most recently
-   *  parsed RMC sentence, false if void ('V'). The time/date fields
-   *  are still updated either way, since the receiver keeps a clock
-   *  running even without a valid fix. */
+  /**
+   * @brief True if the fix was reported valid ('A').
+   */
   bool fix_valid;
 
 } GNSS_DateTime_t;
 
 /**
- * @brief Diagnostic counters, useful for telling a code-side sentence
- *        drop apart from a genuine GNSS signal/receiver issue.
+ * @brief Diagnostic counters.
  */
 typedef struct {
   /** RMC sentences successfully parsed and applied. */
   uint32_t rmc_parsed;
 
-  /** Sentences (of any type) rejected due to a checksum mismatch,
-   *  i.e. bytes were corrupted in transit (noise, framing/baud
-   *  error, bad wiring). */
+  /** Sentences rejected due to a checksum mismatch. */
   uint32_t checksum_failures;
 
-  /** Times the line buffer filled up before a terminating '\n' was
-   *  seen, so the in-progress line was discarded. Rising in step
-   *  with the missed timestamps points at GNSS_LINE_BUFFER_SIZE
-   *  being too small, or a missing '\n' somewhere upstream. */
+  /** Times the line buffer overflowed. */
   uint32_t line_overflows;
 
 } GNSS_Stats_t;
@@ -91,27 +84,38 @@ void GNSS_GetStats(GNSS_Stats_t *stats);
 
 /**
  * @brief Initialise the GNSS module.
- *
- * Registers the module's receive handler against GNSS_UART. Must be
- * called after UART_Init(), since UART_Init() is what starts DMA
- * reception on the port this module listens to.
  */
 void GNSS_Init(void);
 
 /**
  * @brief Retrieve the last UTC date/time received from the GNSS receiver.
  *
- * Performs an atomic copy of the internally stored date/time, so this
- * is safe to call from the main loop while new NMEA data is being
- * received in the background.
- *
  * @param datetime Pointer to a GNSS_DateTime_t to populate.
  *
- * @return true  A datetime has been received at least once, and
- *               @p datetime was populated.
- * @return false No RMC sentence has been successfully parsed yet, or
- *               @p datetime was NULL.
+ * @return true if a valid RMC sentence has been received.
  */
 bool GNSS_GetLastUTC(GNSS_DateTime_t *datetime);
+
+/**
+ * @brief Convert a UTC date/time to Unix time in 100 us units.
+ *
+ * Unix epoch is 1970-01-01 00:00:00 UTC.
+ *
+ * @param datetime UTC date/time to convert.
+ *
+ * @return Number of 100 us intervals since the Unix epoch.
+ */
+uint64_t GNSS_DateTimeToUnix100us(const GNSS_DateTime_t *datetime);
+
+/**
+ * @brief Get the Unix timestamp represented by the last RMC sentence.
+ *
+ * The returned value has 100 us resolution.
+ *
+ * @param timestamp Pointer to receive the timestamp.
+ *
+ * @return true if a GNSS timestamp is available.
+ */
+bool GNSS_GetLastUnix100us(uint64_t *timestamp);
 
 #endif /* GNSS_H */
