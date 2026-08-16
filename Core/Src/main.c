@@ -25,10 +25,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "gnss.h"
 #include "rtc.h"
 #include "stm32f4xx_hal.h"
 #include "uart.h"
 #include <stdint.h>
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -89,7 +91,9 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
-  uint8_t healthy_status[] = "System is healthy\r\n";
+  GNSS_DateTime_t utc;
+  uint8_t timestamp_message[72];
+  int timestamp_length;
 
   /* USER CODE END 1 */
 
@@ -118,6 +122,13 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   TIM_Init();
+
+  /* UART_Init() must run after both USARTx inits and MX_DMA_Init(), since
+   * it starts DMA reception on the ports that are configured for it.
+   * GNSS_Init() then registers its NMEA handler on top of that, so it
+   * must come after UART_Init(). */
+  UART_Init();
+  GNSS_Init();
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -130,7 +141,37 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    UART_Write(COMPUTER_UART, healthy_status, sizeof(healthy_status) - 1);
+    GNSS_Stats_t gnss_stats;
+    GNSS_GetStats(&gnss_stats);
+
+    if (GNSS_GetLastUTC(&utc))
+    {
+      timestamp_length = snprintf((char *)timestamp_message, sizeof(timestamp_message),
+                                  "%04u-%02u-%02u %02u:%02u:%02u.%03u %c chk=%lu ovf=%lu\r\n",
+                                  utc.date.year, utc.date.month, utc.date.day,
+                                  utc.time.hours, utc.time.minutes, utc.time.seconds,
+                                  utc.time.milliseconds, utc.fix_valid ? 'A' : 'V',
+                                  (unsigned long)gnss_stats.checksum_failures,
+                                  (unsigned long)gnss_stats.line_overflows);
+    }
+    else
+    {
+      timestamp_length = snprintf((char *)timestamp_message, sizeof(timestamp_message),
+                                  "No GNSS timestamp yet\r\n");
+    }
+
+    if (timestamp_length > (int)(sizeof(timestamp_message) - 1))
+    {
+      /* snprintf() reports the length it would have written; clamp to
+       * what actually fit in the buffer. */
+      timestamp_length = (int)(sizeof(timestamp_message) - 1);
+    }
+
+    if (timestamp_length > 0)
+    {
+      UART_Write(COMPUTER_UART, timestamp_message, (uint16_t)timestamp_length);
+    }
+
     HAL_Delay(100);
     /* USER CODE END WHILE */
 

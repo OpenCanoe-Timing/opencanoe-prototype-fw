@@ -29,7 +29,12 @@ extern UART_HandleTypeDef huart2;
 #define UART_TX_QUEUE_SIZE 8
 #define UART_TX_BUFFER_SIZE 128
 
-#define UART_RX_BUFFER_SIZE 256
+/* A full second of NEO-6M NMEA output (RMC+VTG+GGA+GSA+GSV+GSV+GLL) is
+ * already ~430 bytes, and grows further with more satellites in view
+ * (extra $GPGSV sentences). This buffer must comfortably outlast one
+ * epoch's worth of data so a DMA wrap never lands mid-sentence; 1024
+ * gives roughly 2 seconds of headroom even with a busy sky. */
+#define UART_RX_BUFFER_SIZE 1024
 
 /**
  * @brief UART transmit message structure.
