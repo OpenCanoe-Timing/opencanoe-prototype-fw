@@ -131,14 +131,7 @@ int main(void)
   GNSS_Init();
 
   LCD_Init();
-
   LCD_FillScreen(LCD_BLACK);
-
-  LCD_SetTextColor(LCD_CYAN);
-  LCD_SetTextSize(2);
-  LCD_SetCursor(20, 30);
-
-  LCD_Print("HELLO WORLD");
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -151,6 +144,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    LCD_Process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

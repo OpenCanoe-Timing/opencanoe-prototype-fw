@@ -2,6 +2,7 @@
 #define LCD_H
 
 #include "main.h"
+#include "gnss.h"
 #include <stdint.h>
 
 /* Display size */
@@ -33,5 +34,10 @@ void LCD_SetTextColor(uint16_t color);
 void LCD_SetTextSize(uint8_t size);
 void LCD_WriteChar(char c);
 void LCD_Print(const char *str);
+
+/* Time display */
+void LCD_RequestTimeUpdate(const GNSS_DateTime_t *datetime);
+
+void LCD_Process(void);
 
 #endif

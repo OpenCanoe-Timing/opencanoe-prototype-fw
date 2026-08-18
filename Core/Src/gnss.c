@@ -19,6 +19,7 @@
  */
 
 #include "gnss.h"
+#include "lcd.h"
 #include "uart.h"
 #include "stm32f4xx_hal.h"
 
@@ -321,6 +322,8 @@ static void GNSS_ParseRMC(const char *sentence)
   stats.rmc_parsed++;
 
   __enable_irq();
+
+  LCD_RequestTimeUpdate(&parsed);
 }
 
 

@@ -1,5 +1,5 @@
 #include "lcd.h"
-
+#include <stdbool.h>
 /*
  * Change this if you're using another SPI peripheral.
  */
@@ -43,6 +43,9 @@ static uint16_t cursor_x = 0;
 static uint16_t cursor_y = 0;
 static uint16_t text_color = LCD_WHITE;
 static uint8_t text_size = 1;
+
+static volatile GNSS_DateTime_t display_datetime = {0};
+static volatile bool time_update_pending = false;
 
 
 /* --------------------------------------------------------------------------
@@ -624,4 +627,129 @@ void LCD_Print(const char *str)
 
         str++;
     }
+}
+
+/**
+ * @brief Request an update of the displayed UTC date and time.
+ *
+ * Stores the latest date and time received from the GNSS module
+ * and marks the display update as pending. The actual LCD update
+ * is performed by LCD_Process().
+ *
+ * @param datetime Pointer to the latest GNSS UTC date/time.
+ */
+void LCD_RequestTimeUpdate(const GNSS_DateTime_t *datetime)
+{
+    if (datetime == NULL)
+        return;
+
+    __disable_irq();
+
+    display_datetime = *datetime;
+    time_update_pending = true;
+
+    __enable_irq();
+}
+
+/**
+ * @brief Process any pending LCD date/time update.
+ *
+ * Checks whether a new UTC date/time has been received. If an
+ * update is pending, the stored date/time is rendered to the LCD.
+ *
+ * This function performs blocking SPI transfers and should be
+ * called from the main application context rather than an
+ * interrupt.
+ */
+void LCD_Process(void)
+{
+    GNSS_DateTime_t datetime;
+
+    __disable_irq();
+
+    if (!time_update_pending)
+    {
+        __enable_irq();
+        return;
+    }
+
+    datetime = display_datetime;
+    time_update_pending = false;
+
+    __enable_irq();
+
+    char display_string[32];
+
+    display_string[0] = 'U';
+    display_string[1] = 'T';
+    display_string[2] = 'C';
+    display_string[3] = ':';
+
+    display_string[4] = '\n';
+
+    /* Date: DD/MM/YYYY */
+
+    display_string[5] =
+        '0' + (datetime.date.day / 10);
+
+    display_string[6] =
+        '0' + (datetime.date.day % 10);
+
+    display_string[7] = '/';
+
+    display_string[8] =
+        '0' + (datetime.date.month / 10);
+
+    display_string[9] =
+        '0' + (datetime.date.month % 10);
+
+    display_string[10] = '/';
+
+    display_string[11] =
+        '0' + ((datetime.date.year / 1000) % 10);
+
+    display_string[12] =
+        '0' + ((datetime.date.year / 100) % 10);
+
+    display_string[13] =
+        '0' + ((datetime.date.year / 10) % 10);
+
+    display_string[14] =
+        '0' + (datetime.date.year % 10);
+
+    display_string[15] = '\n';
+
+    /* Time: HH:MM:SS */
+
+    display_string[16] =
+        '0' + (datetime.time.hours / 10);
+
+    display_string[17] =
+        '0' + (datetime.time.hours % 10);
+
+    display_string[18] = ':';
+
+    display_string[19] =
+        '0' + (datetime.time.minutes / 10);
+
+    display_string[20] =
+        '0' + (datetime.time.minutes % 10);
+
+    display_string[21] = ':';
+
+    display_string[22] =
+        '0' + (datetime.time.seconds / 10);
+
+    display_string[23] =
+        '0' + (datetime.time.seconds % 10);
+
+    display_string[24] = '\0';
+
+    LCD_FillScreen(LCD_BLACK);
+
+    LCD_SetTextColor(LCD_CYAN);
+    LCD_SetTextSize(2);
+    LCD_SetCursor(25, 20);
+
+    LCD_Print(display_string);
 }
