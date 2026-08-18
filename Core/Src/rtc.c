@@ -30,7 +30,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define IMPULSE_LOCKOUT_MS 50U
+#define IMPULSE_LOCKOUT_MS 200U
 
 #define TIM2_TICKS_PER_100US 10U
 
