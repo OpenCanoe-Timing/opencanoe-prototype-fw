@@ -32,7 +32,7 @@ extern SPI_HandleTypeDef hspi2;
 #define ST7735_RASET        0x2B
 #define ST7735_RAMWR        0x2C
 #define ST7735_DISPON       0x29
-#define ST7735_INVON        0x21
+#define ST7735_INVOFF       0x20
 
 
 /* --------------------------------------------------------------------------
@@ -200,14 +200,11 @@ void LCD_Init(void)
      */
     LCD_WriteCommand(ST7735_MADCTL);
 
-    uint8_t madctl = 0xA8;
+    uint8_t madctl = 0xA0;
     LCD_WriteDataByte(madctl);
 
 
-    /*
-     * Inversion is commonly enabled on ST7735 modules.
-     */
-    LCD_WriteCommand(ST7735_INVON);
+    LCD_WriteCommand(ST7735_INVOFF);
 
 
     /* Display on */
