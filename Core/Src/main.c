@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 
 #include "gnss.h"
+#include "lcd.h"
 #include "rtc.h"
 #include "stm32f4xx_hal.h"
 #include "uart.h"
@@ -128,6 +129,16 @@ int main(void)
    * must come after UART_Init(). */
   UART_Init();
   GNSS_Init();
+
+  LCD_Init();
+
+  LCD_FillScreen(LCD_BLACK);
+
+  LCD_SetTextColor(LCD_CYAN);
+  LCD_SetTextSize(2);
+  LCD_SetCursor(20, 30);
+
+  LCD_Print("HELLO WORLD");
   /* USER CODE END 2 */
 
   /* Initialize leds */

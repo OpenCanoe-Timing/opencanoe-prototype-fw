@@ -57,6 +57,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/rtc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/uart.c
     Core/Src/gnss.c
+    Core/Src/lcd.c
 )
 
 # Add include paths
