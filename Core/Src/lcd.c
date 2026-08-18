@@ -160,6 +160,7 @@ static void LCD_WriteDataByte(uint8_t data) { LCD_WriteData(&data, 1U); }
 
 static void LCD_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1,
                                  uint16_t y1) {
+
   uint8_t data[4];
 
   LCD_WriteCommand(ST7735_CASET);
@@ -255,6 +256,7 @@ void LCD_Init(void) {
  * -------------------------------------------------------------------------- */
 
 void LCD_DrawPixel(uint16_t x, uint16_t y, uint16_t color) {
+
   if (x >= LCD_WIDTH || y >= LCD_HEIGHT) {
     return;
   }
@@ -264,7 +266,6 @@ void LCD_DrawPixel(uint16_t x, uint16_t y, uint16_t color) {
   uint8_t data[2];
 
   data[0] = (uint8_t)(color >> 8);
-
   data[1] = (uint8_t)(color & 0xFFU);
 
   LCD_WriteData(data, 2U);
@@ -276,7 +277,6 @@ void LCD_FillScreen(uint16_t color) {
   uint8_t buffer[128];
 
   uint8_t high = (uint8_t)(color >> 8);
-
   uint8_t low = (uint8_t)(color & 0xFFU);
 
   for (uint16_t i = 0U; i < sizeof(buffer); i += 2U) {
@@ -293,6 +293,7 @@ void LCD_FillScreen(uint16_t color) {
   uint32_t pixels_sent = 0U;
 
   while (pixels_sent < pixel_count) {
+
     uint32_t remaining = pixel_count - pixels_sent;
 
     uint16_t pixels = (remaining >= 64U) ? 64U : (uint16_t)remaining;
@@ -306,6 +307,7 @@ void LCD_FillScreen(uint16_t color) {
 }
 
 void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
+
   if (x >= LCD_WIDTH || y >= LCD_HEIGHT) {
     return;
   }
@@ -323,7 +325,6 @@ void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
   uint8_t buffer[128];
 
   uint8_t high = (uint8_t)(color >> 8);
-
   uint8_t low = (uint8_t)(color & 0xFFU);
 
   for (uint16_t i = 0U; i < sizeof(buffer); i += 2U) {
@@ -338,6 +339,7 @@ void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
   uint16_t remaining = width;
 
   while (remaining > 0U) {
+
     uint16_t pixels = (remaining > 64U) ? 64U : remaining;
 
     HAL_SPI_Transmit(&hspi2, buffer, (uint16_t)(pixels * 2U), HAL_MAX_DELAY);
@@ -353,6 +355,7 @@ void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
  * -------------------------------------------------------------------------- */
 
 void LCD_SetCursor(uint16_t x, uint16_t y) {
+
   cursor_x = x;
   cursor_y = y;
 }
@@ -360,6 +363,7 @@ void LCD_SetCursor(uint16_t x, uint16_t y) {
 void LCD_SetTextColor(uint16_t color) { text_color = color; }
 
 void LCD_SetTextSize(uint8_t size) {
+
   if (size == 0U) {
     size = 1U;
   }
@@ -374,6 +378,7 @@ void LCD_SetTextBackground(uint16_t color) { text_background = color; }
  * -------------------------------------------------------------------------- */
 
 static const uint8_t font5x7[95][5] = {
+
     {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00},
     {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7F, 0x14, 0x7F, 0x14},
     {0x24, 0x2A, 0x7F, 0x2A, 0x12}, {0x23, 0x13, 0x08, 0x64, 0x62},
@@ -433,6 +438,7 @@ static const uint8_t font5x7[95][5] = {
  * -------------------------------------------------------------------------- */
 
 void LCD_WriteChar(char c) {
+
   if (c < 0x20 || c > 0x7E) {
     return;
   }
@@ -491,10 +497,13 @@ void LCD_WriteChar(char c) {
       }
 
       if (pixel_on) {
+
         pixel_buffer[buffer_index++] = color_high;
 
         pixel_buffer[buffer_index++] = color_low;
+
       } else {
+
         pixel_buffer[buffer_index++] = background_high;
 
         pixel_buffer[buffer_index++] = background_low;
@@ -511,6 +520,7 @@ void LCD_WriteChar(char c) {
 }
 
 void LCD_Print(const char *str) {
+
   if (str == NULL) {
     return;
   }
@@ -533,20 +543,110 @@ void LCD_Print(const char *str) {
 }
 
 /* --------------------------------------------------------------------------
+ * GNSS warning symbol
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief Draw a small warning triangle with an exclamation mark.
+ *
+ * The symbol is intentionally drawn directly rather than being added to
+ * the font table. This keeps the existing text rendering unchanged.
+ */
+static void LCD_DrawWarningSymbol(uint16_t center_x, uint16_t top_y,
+                                  uint16_t size, uint16_t color) {
+
+  if (size < 6U) {
+    return;
+  }
+
+  uint16_t bottom_y = top_y + size;
+
+  uint16_t left_x = center_x - (size / 2U);
+
+  uint16_t right_x = center_x + (size / 2U);
+
+  /*
+   * Left and right diagonal edges.
+   */
+  for (uint16_t i = 0U; i <= size; i++) {
+
+    uint16_t y = top_y + i;
+
+    uint16_t left = center_x - (uint16_t)((size * i) / (2U * size));
+
+    uint16_t right = center_x + (uint16_t)((size * i) / (2U * size));
+
+    /*
+     * Correctly form the diagonal based on the current height.
+     */
+    left = center_x - (uint16_t)((size / 2U) * i / size);
+
+    right = center_x + (uint16_t)((size / 2U) * i / size);
+
+    if (left < LCD_WIDTH && y < LCD_HEIGHT) {
+      LCD_DrawPixel(left, y, color);
+    }
+
+    if (right < LCD_WIDTH && y < LCD_HEIGHT) {
+      LCD_DrawPixel(right, y, color);
+    }
+  }
+
+  /*
+   * Bottom edge.
+   */
+  if (bottom_y < LCD_HEIGHT) {
+
+    for (uint16_t x = left_x; x <= right_x; x++) {
+
+      if (x < LCD_WIDTH) {
+        LCD_DrawPixel(x, bottom_y, color);
+      }
+    }
+  }
+
+  /*
+   * Exclamation mark.
+   */
+  uint16_t exclamation_x = center_x;
+
+  uint16_t exclamation_top = top_y + size / 3U;
+
+  uint16_t exclamation_bottom = top_y + (size * 2U) / 3U;
+
+  for (uint16_t y = exclamation_top; y <= exclamation_bottom; y++) {
+
+    if (exclamation_x < LCD_WIDTH && y < LCD_HEIGHT) {
+
+      LCD_DrawPixel(exclamation_x, y, color);
+    }
+  }
+
+  /*
+   * Exclamation dot.
+   */
+  uint16_t dot_y = top_y + (size * 4U) / 5U;
+
+  if (exclamation_x < LCD_WIDTH && dot_y < LCD_HEIGHT) {
+
+    LCD_DrawPixel(exclamation_x, dot_y, color);
+  }
+}
+
+/* --------------------------------------------------------------------------
  * GNSS state
  * -------------------------------------------------------------------------- */
 
 void LCD_SetGNSSLock(bool locked) {
+
   __disable_irq();
 
   gnss_pps_locked = locked;
 
   /*
-   * Force the display to redraw when lock state changes.
+   * Force the display to redraw whenever the lock state changes.
    */
-  if (!locked) {
-    display_initialised = false;
-  }
+  display_initialised = false;
 
   time_update_pending = true;
 
@@ -573,7 +673,9 @@ void LCD_RequestTimeUpdate(const GNSS_DateTime_t *datetime) {
  * -------------------------------------------------------------------------- */
 
 void LCD_RequestImpulse(char channel) {
+
   if (channel != '1' && channel != '2') {
+
     return;
   }
 
@@ -606,6 +708,7 @@ void LCD_RequestImpulse(char channel) {
  * -------------------------------------------------------------------------- */
 
 void LCD_Process(void) {
+
   GNSS_DateTime_t datetime;
 
   bool locked;
@@ -639,7 +742,7 @@ void LCD_Process(void) {
 
   /*
    * ============================================================
-   * GNSS lock screen
+   * GNSS NOT LOCKED
    * ============================================================
    */
 
@@ -653,8 +756,19 @@ void LCD_Process(void) {
 
       LCD_SetTextBackground(LCD_BLACK);
 
+      /*
+       * Keep the existing text size exactly as requested.
+       */
       LCD_SetTextSize(2U);
 
+      /*
+       * Warning symbol.
+       */
+      LCD_DrawWarningSymbol(80U, 5U, 24U, LCD_RED);
+
+      /*
+       * Warning message.
+       */
       LCD_SetCursor(8U, 45U);
 
       LCD_Print("GNSS lock\n"
@@ -668,7 +782,7 @@ void LCD_Process(void) {
 
   /*
    * ============================================================
-   * Timing impulse indication
+   * TIMING IMPULSE INDICATION
    * ============================================================
    */
 
@@ -784,14 +898,21 @@ void LCD_Process(void) {
 
     displayed_impulse_sequence = 0U;
 
+    impulse_displayed = false;
+
+    displayed_impulse_channel = '\0';
+
+    displayed_impulse_sequence = 0U;
+
     /*
      * Fall through to redraw UTC.
      */
+    update = true;
   }
 
   /*
    * ============================================================
-   * UTC display
+   * UTC DISPLAY
    * ============================================================
    */
 
