@@ -21,1099 +21,846 @@
 #include "lcd.h"
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
 extern SPI_HandleTypeDef hspi2;
 
-
-/* --------------------------------------------------------------------------
+/*
+ * ============================================================
  * ST7735 pins
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
-#define LCD_CS_GPIO_Port    GPIOC
-#define LCD_CS_Pin          GPIO_PIN_9
+#define LCD_CS_GPIO_Port GPIOC
+#define LCD_CS_Pin GPIO_PIN_9
 
-#define LCD_DC_GPIO_Port    GPIOC
-#define LCD_DC_Pin          GPIO_PIN_8
+#define LCD_DC_GPIO_Port GPIOC
+#define LCD_DC_Pin GPIO_PIN_8
 
-#define LCD_RST_GPIO_Port   GPIOC
-#define LCD_RST_Pin         GPIO_PIN_7
+#define LCD_RST_GPIO_Port GPIOC
+#define LCD_RST_Pin GPIO_PIN_7
 
-
-/* --------------------------------------------------------------------------
+/*
+ * ============================================================
  * ST7735 commands
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
-#define ST7735_SWRESET      0x01
-#define ST7735_SLPOUT       0x11
-#define ST7735_COLMOD       0x3A
-#define ST7735_MADCTL       0x36
-#define ST7735_CASET        0x2A
-#define ST7735_RASET        0x2B
-#define ST7735_RAMWR        0x2C
-#define ST7735_DISPON       0x29
-#define ST7735_INVOFF       0x20
+#define ST7735_SWRESET 0x01U
+#define ST7735_SLPOUT 0x11U
+#define ST7735_COLMOD 0x3AU
+#define ST7735_MADCTL 0x36U
+#define ST7735_CASET 0x2AU
+#define ST7735_RASET 0x2BU
+#define ST7735_RAMWR 0x2CU
+#define ST7735_DISPON 0x29U
+#define ST7735_INVOFF 0x20U
 
+/*
+ * ============================================================
+ * Application timing
+ * ============================================================
+ */
 
-/* --------------------------------------------------------------------------
+#define LCD_IMPULSE_DISPLAY_MS 1000U
+
+/*
+ * ============================================================
  * Internal state
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
-static uint16_t cursor_x = 0;
-static uint16_t cursor_y = 0;
+static uint16_t cursor_x = 0U;
+static uint16_t cursor_y = 0U;
 
 static uint16_t text_color = LCD_WHITE;
 static uint16_t text_background = LCD_BLACK;
 
-static uint8_t text_size = 1;
+static uint8_t text_size = 1U;
 
+/*
+ * Last PPS-disciplined UTC time.
+ */
 static volatile GNSS_DateTime_t display_datetime = {0};
+
 static volatile bool time_update_pending = false;
 
+/*
+ * Impulse display state.
+ */
+static volatile bool impulse_pending = false;
 
-/* --------------------------------------------------------------------------
+static volatile char impulse_channel = '\0';
+
+static volatile uint32_t impulse_start_time = 0U;
+
+/*
+ * Which screen is currently displayed.
+ */
+typedef enum {
+  LCD_SCREEN_TIME = 0,
+  LCD_SCREEN_IMPULSE
+
+} LCD_Screen_t;
+
+static LCD_Screen_t current_screen = LCD_SCREEN_TIME;
+
+/*
+ * ============================================================
  * GPIO
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
-static void LCD_CS_Low(void)
-{
-    HAL_GPIO_WritePin(
-        LCD_CS_GPIO_Port,
-        LCD_CS_Pin,
-        GPIO_PIN_RESET
-    );
+static void LCD_CS_Low(void) {
+  HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_RESET);
 }
 
-
-static void LCD_CS_High(void)
-{
-    HAL_GPIO_WritePin(
-        LCD_CS_GPIO_Port,
-        LCD_CS_Pin,
-        GPIO_PIN_SET
-    );
+static void LCD_CS_High(void) {
+  HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_SET);
 }
 
-
-static void LCD_DC_Low(void)
-{
-    HAL_GPIO_WritePin(
-        LCD_DC_GPIO_Port,
-        LCD_DC_Pin,
-        GPIO_PIN_RESET
-    );
+static void LCD_DC_Low(void) {
+  HAL_GPIO_WritePin(LCD_DC_GPIO_Port, LCD_DC_Pin, GPIO_PIN_RESET);
 }
 
-
-static void LCD_DC_High(void)
-{
-    HAL_GPIO_WritePin(
-        LCD_DC_GPIO_Port,
-        LCD_DC_Pin,
-        GPIO_PIN_SET
-    );
+static void LCD_DC_High(void) {
+  HAL_GPIO_WritePin(LCD_DC_GPIO_Port, LCD_DC_Pin, GPIO_PIN_SET);
 }
 
+static void LCD_Reset(void) {
+  HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_RESET);
 
-static void LCD_Reset(void)
-{
-    HAL_GPIO_WritePin(
-        LCD_RST_GPIO_Port,
-        LCD_RST_Pin,
-        GPIO_PIN_RESET
-    );
+  HAL_Delay(20U);
 
-    HAL_Delay(20);
+  HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_SET);
 
-    HAL_GPIO_WritePin(
-        LCD_RST_GPIO_Port,
-        LCD_RST_Pin,
-        GPIO_PIN_SET
-    );
-
-    HAL_Delay(120);
+  HAL_Delay(120U);
 }
 
-
-/* --------------------------------------------------------------------------
+/*
+ * ============================================================
  * SPI
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
-static void LCD_WriteCommand(uint8_t command)
-{
-    LCD_CS_Low();
-    LCD_DC_Low();
+static void LCD_WriteCommand(uint8_t command) {
+  LCD_CS_Low();
+  LCD_DC_Low();
 
-    HAL_SPI_Transmit(
-        &hspi2,
-        &command,
-        1,
-        HAL_MAX_DELAY
-    );
+  HAL_SPI_Transmit(&hspi2, &command, 1U, HAL_MAX_DELAY);
 
-    LCD_CS_High();
+  LCD_CS_High();
 }
 
+static void LCD_WriteData(uint8_t *data, uint16_t length) {
+  LCD_CS_Low();
+  LCD_DC_High();
 
-static void LCD_WriteData(
-    uint8_t *data,
-    uint16_t length)
-{
-    LCD_CS_Low();
-    LCD_DC_High();
+  HAL_SPI_Transmit(&hspi2, data, length, HAL_MAX_DELAY);
 
-    HAL_SPI_Transmit(
-        &hspi2,
-        data,
-        length,
-        HAL_MAX_DELAY
-    );
-
-    LCD_CS_High();
+  LCD_CS_High();
 }
 
+static void LCD_WriteDataByte(uint8_t data) { LCD_WriteData(&data, 1U); }
 
-static void LCD_WriteDataByte(uint8_t data)
-{
-    LCD_WriteData(&data, 1);
-}
-
-
-/* --------------------------------------------------------------------------
+/*
+ * ============================================================
  * ST7735 address window
- * -------------------------------------------------------------------------- */
-
-/**
- * @brief Set the rectangular region of the display that will receive pixels.
- *
- * The next pixel written to the ST7735 is placed at x0,y0 and subsequent
- * pixels proceed across the selected window.
+ * ============================================================
  */
-static void LCD_SetAddressWindow(
-    uint16_t x0,
-    uint16_t y0,
-    uint16_t x1,
-    uint16_t y1)
-{
-    uint8_t data[4];
 
-    /* Column address */
-    LCD_WriteCommand(ST7735_CASET);
+static void LCD_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1,
+                                 uint16_t y1) {
+  uint8_t data[4];
 
-    data[0] = (uint8_t)(x0 >> 8);
-    data[1] = (uint8_t)(x0 & 0xFF);
-    data[2] = (uint8_t)(x1 >> 8);
-    data[3] = (uint8_t)(x1 & 0xFF);
+  /*
+   * Column address.
+   */
+  LCD_WriteCommand(ST7735_CASET);
 
-    LCD_WriteData(data, 4);
+  data[0] = (uint8_t)(x0 >> 8);
+  data[1] = (uint8_t)(x0 & 0xFFU);
+  data[2] = (uint8_t)(x1 >> 8);
+  data[3] = (uint8_t)(x1 & 0xFFU);
 
+  LCD_WriteData(data, 4U);
 
-    /* Row address */
-    LCD_WriteCommand(ST7735_RASET);
+  /*
+   * Row address.
+   */
+  LCD_WriteCommand(ST7735_RASET);
 
-    data[0] = (uint8_t)(y0 >> 8);
-    data[1] = (uint8_t)(y0 & 0xFF);
-    data[2] = (uint8_t)(y1 >> 8);
-    data[3] = (uint8_t)(y1 & 0xFF);
+  data[0] = (uint8_t)(y0 >> 8);
+  data[1] = (uint8_t)(y0 & 0xFFU);
+  data[2] = (uint8_t)(y1 >> 8);
+  data[3] = (uint8_t)(y1 & 0xFFU);
 
-    LCD_WriteData(data, 4);
+  LCD_WriteData(data, 4U);
 
-
-    /* Start writing pixels */
-    LCD_WriteCommand(ST7735_RAMWR);
+  /*
+   * Start RAM write.
+   */
+  LCD_WriteCommand(ST7735_RAMWR);
 }
 
-
-/* --------------------------------------------------------------------------
+/*
+ * ============================================================
  * Initialisation
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
-void LCD_Init(void)
-{
-    LCD_Reset();
+void LCD_Init(void) {
+  LCD_Reset();
 
+  /*
+   * Software reset.
+   */
+  LCD_WriteCommand(ST7735_SWRESET);
 
-    /* Software reset */
-    LCD_WriteCommand(ST7735_SWRESET);
+  HAL_Delay(150U);
 
-    HAL_Delay(150);
+  /*
+   * Exit sleep.
+   */
+  LCD_WriteCommand(ST7735_SLPOUT);
 
+  HAL_Delay(120U);
 
-    /* Exit sleep */
-    LCD_WriteCommand(ST7735_SLPOUT);
+  /*
+   * RGB565.
+   */
+  LCD_WriteCommand(ST7735_COLMOD);
 
-    HAL_Delay(120);
+  LCD_WriteDataByte(0x05U);
 
+  HAL_Delay(10U);
 
-    /*
-     * Pixel format:
-     *
-     * 0x05 = 16-bit RGB565
-     */
-    LCD_WriteCommand(ST7735_COLMOD);
+  /*
+   * Display orientation.
+   */
+  LCD_WriteCommand(ST7735_MADCTL);
 
-    uint8_t color_mode = 0x05;
+  LCD_WriteDataByte(0xA0U);
 
-    LCD_WriteDataByte(color_mode);
+  /*
+   * Disable inversion.
+   */
+  LCD_WriteCommand(ST7735_INVOFF);
 
-    HAL_Delay(10);
+  /*
+   * Display on.
+   */
+  LCD_WriteCommand(ST7735_DISPON);
 
+  HAL_Delay(100U);
 
-    /*
-     * Memory access control.
-     *
-     * 0xA0 is the orientation currently used by this display.
-     */
-    LCD_WriteCommand(ST7735_MADCTL);
+  /*
+   * Default text state.
+   */
+  cursor_x = 0U;
+  cursor_y = 0U;
 
-    uint8_t madctl = 0xA0;
+  text_color = LCD_WHITE;
+  text_background = LCD_BLACK;
 
-    LCD_WriteDataByte(madctl);
+  text_size = 1U;
 
-
-    /* Disable display inversion */
-    LCD_WriteCommand(ST7735_INVOFF);
-
-
-    /* Display on */
-    LCD_WriteCommand(ST7735_DISPON);
-
-    HAL_Delay(100);
-
-
-    /* Default text state */
-    cursor_x = 0;
-    cursor_y = 0;
-
-    text_color = LCD_WHITE;
-    text_background = LCD_BLACK;
-
-    text_size = 1;
+  /*
+   * Start with a clean screen.
+   */
+  LCD_FillScreen(LCD_BLACK);
 }
 
-
-/* --------------------------------------------------------------------------
+/*
+ * ============================================================
  * Basic drawing
- * -------------------------------------------------------------------------- */
-
-void LCD_DrawPixel(
-    uint16_t x,
-    uint16_t y,
-    uint16_t color)
-{
-    if (x >= LCD_WIDTH || y >= LCD_HEIGHT)
-        return;
-
-    LCD_SetAddressWindow(
-        x,
-        y,
-        x,
-        y
-    );
-
-    uint8_t data[2];
-
-    data[0] = (uint8_t)(color >> 8);
-    data[1] = (uint8_t)(color & 0xFF);
-
-    LCD_WriteData(data, 2);
-}
-
-
-/**
- * @brief Fill the entire display with one colour.
+ * ============================================================
  */
-void LCD_FillScreen(uint16_t color)
-{
-    LCD_SetAddressWindow(
-        0,
-        0,
-        LCD_WIDTH - 1,
-        LCD_HEIGHT - 1
-    );
 
-    uint8_t buffer[128];
+void LCD_DrawPixel(uint16_t x, uint16_t y, uint16_t color) {
+  if (x >= LCD_WIDTH || y >= LCD_HEIGHT) {
+    return;
+  }
 
-    uint8_t high = (uint8_t)(color >> 8);
-    uint8_t low  = (uint8_t)(color & 0xFF);
+  LCD_SetAddressWindow(x, y, x, y);
 
-    for (uint16_t i = 0; i < sizeof(buffer); i += 2)
-    {
-        buffer[i]     = high;
-        buffer[i + 1] = low;
-    }
+  uint8_t data[2];
 
-    LCD_CS_Low();
-    LCD_DC_High();
+  data[0] = (uint8_t)(color >> 8);
 
-    /*
-     * 128 bytes = 64 RGB565 pixels.
-     */
-    uint32_t pixel_count =
-        (uint32_t)LCD_WIDTH * LCD_HEIGHT;
+  data[1] = (uint8_t)(color & 0xFFU);
 
-    uint32_t pixels_sent = 0;
-
-    while (pixels_sent < pixel_count)
-    {
-        uint32_t remaining =
-            pixel_count - pixels_sent;
-
-        uint16_t pixels =
-            (remaining >= 64) ? 64 : (uint16_t)remaining;
-
-        HAL_SPI_Transmit(
-            &hspi2,
-            buffer,
-            (uint16_t)(pixels * 2),
-            HAL_MAX_DELAY
-        );
-
-        pixels_sent += pixels;
-    }
-
-    LCD_CS_High();
+  LCD_WriteData(data, 2U);
 }
 
+void LCD_FillScreen(uint16_t color) {
+  LCD_SetAddressWindow(0U, 0U, LCD_WIDTH - 1U, LCD_HEIGHT - 1U);
 
-/**
- * @brief Draw a horizontal line efficiently.
- */
-void LCD_DrawFastHLine(
-    uint16_t x,
-    uint16_t y,
-    uint16_t width,
-    uint16_t color)
-{
-    if (x >= LCD_WIDTH || y >= LCD_HEIGHT)
-        return;
+  uint8_t buffer[128];
 
-    if (width > LCD_WIDTH - x)
-        width = LCD_WIDTH - x;
+  uint8_t high = (uint8_t)(color >> 8);
 
-    if (width == 0)
-        return;
+  uint8_t low = (uint8_t)(color & 0xFFU);
 
-    LCD_SetAddressWindow(
-        x,
-        y,
-        x + width - 1,
-        y
-    );
+  for (uint16_t i = 0U; i < sizeof(buffer); i += 2U) {
+    buffer[i] = high;
+    buffer[i + 1U] = low;
+  }
 
-    uint8_t buffer[128];
+  LCD_CS_Low();
+  LCD_DC_High();
 
-    uint8_t high = (uint8_t)(color >> 8);
-    uint8_t low  = (uint8_t)(color & 0xFF);
+  uint32_t pixel_count = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
 
-    for (uint16_t i = 0; i < sizeof(buffer); i += 2)
-    {
-        buffer[i]     = high;
-        buffer[i + 1] = low;
-    }
+  uint32_t pixels_sent = 0U;
 
-    LCD_CS_Low();
-    LCD_DC_High();
+  while (pixels_sent < pixel_count) {
+    uint32_t remaining = pixel_count - pixels_sent;
 
-    uint16_t remaining = width;
+    uint16_t pixels = (remaining >= 64U) ? 64U : (uint16_t)remaining;
 
-    while (remaining > 0)
-    {
-        uint16_t pixels =
-            (remaining > 64) ? 64 : remaining;
+    HAL_SPI_Transmit(&hspi2, buffer, (uint16_t)(pixels * 2U), HAL_MAX_DELAY);
 
-        HAL_SPI_Transmit(
-            &hspi2,
-            buffer,
-            pixels * 2,
-            HAL_MAX_DELAY
-        );
+    pixels_sent += pixels;
+  }
 
-        remaining -= pixels;
-    }
-
-    LCD_CS_High();
+  LCD_CS_High();
 }
 
+void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
+  if (x >= LCD_WIDTH || y >= LCD_HEIGHT) {
+    return;
+  }
 
-/* --------------------------------------------------------------------------
+  if (width > LCD_WIDTH - x) {
+    width = LCD_WIDTH - x;
+  }
+
+  if (width == 0U) {
+    return;
+  }
+
+  LCD_SetAddressWindow(x, y, x + width - 1U, y);
+
+  uint8_t buffer[128];
+
+  uint8_t high = (uint8_t)(color >> 8);
+
+  uint8_t low = (uint8_t)(color & 0xFFU);
+
+  for (uint16_t i = 0U; i < sizeof(buffer); i += 2U) {
+    buffer[i] = high;
+    buffer[i + 1U] = low;
+  }
+
+  LCD_CS_Low();
+  LCD_DC_High();
+
+  uint16_t remaining = width;
+
+  while (remaining > 0U) {
+    uint16_t pixels = (remaining > 64U) ? 64U : remaining;
+
+    HAL_SPI_Transmit(&hspi2, buffer, (uint16_t)(pixels * 2U), HAL_MAX_DELAY);
+
+    remaining -= pixels;
+  }
+
+  LCD_CS_High();
+}
+
+/*
+ * ============================================================
  * Text
- * -------------------------------------------------------------------------- */
-
-void LCD_SetCursor(
-    uint16_t x,
-    uint16_t y)
-{
-    cursor_x = x;
-    cursor_y = y;
-}
-
-
-void LCD_SetTextColor(uint16_t color)
-{
-    text_color = color;
-}
-
-
-void LCD_SetTextSize(uint8_t size)
-{
-    if (size == 0)
-        size = 1;
-
-    text_size = size;
-}
-
-
-/**
- * @brief Set the background colour used when drawing text.
- *
- * The background is important because characters are redrawn directly
- * over previous characters. Pixels belonging to the glyph are drawn
- * using text_color and empty glyph pixels are drawn using this colour.
+ * ============================================================
  */
-void LCD_SetTextBackground(uint16_t color)
-{
-    text_background = color;
+
+void LCD_SetCursor(uint16_t x, uint16_t y) {
+  cursor_x = x;
+  cursor_y = y;
 }
 
+void LCD_SetTextColor(uint16_t color) { text_color = color; }
 
-/* --------------------------------------------------------------------------
+void LCD_SetTextBackground(uint16_t color) { text_background = color; }
+
+void LCD_SetTextSize(uint8_t size) {
+  if (size == 0U) {
+    size = 1U;
+  }
+
+  text_size = size;
+}
+
+/*
+ * ============================================================
  * 5x7 font
- * -------------------------------------------------------------------------- */
+ * ============================================================
+ */
 
 static const uint8_t font5x7[95][5] = {
-
-    /* 0x20 ' ' */
-    {0x00,0x00,0x00,0x00,0x00},
-
-    /* 0x21 '!' */
-    {0x00,0x00,0x5F,0x00,0x00},
-
-    /* 0x22 '"' */
-    {0x00,0x07,0x00,0x07,0x00},
-
-    /* 0x23 '#' */
-    {0x14,0x7F,0x14,0x7F,0x14},
-
-    /* 0x24 '$' */
-    {0x24,0x2A,0x7F,0x2A,0x12},
-
-    /* 0x25 '%' */
-    {0x23,0x13,0x08,0x64,0x62},
-
-    /* 0x26 '&' */
-    {0x36,0x49,0x55,0x22,0x50},
-
-    /* 0x27 '\'' */
-    {0x00,0x05,0x03,0x00,0x00},
-
-    /* 0x28 '(' */
-    {0x00,0x1C,0x22,0x41,0x00},
-
-    /* 0x29 ')' */
-    {0x00,0x41,0x22,0x1C,0x00},
-
-    /* 0x2A '*' */
-    {0x14,0x08,0x3E,0x08,0x14},
-
-    /* 0x2B '+' */
-    {0x08,0x08,0x3E,0x08,0x08},
-
-    /* 0x2C ',' */
-    {0x00,0x50,0x30,0x00,0x00},
-
-    /* 0x2D '-' */
-    {0x08,0x08,0x08,0x08,0x08},
-
-    /* 0x2E '.' */
-    {0x00,0x60,0x60,0x00,0x00},
-
-    /* 0x2F '/' */
-    {0x20,0x10,0x08,0x04,0x02},
-
-    /* 0x30 '0' */
-    {0x3E,0x51,0x49,0x45,0x3E},
-
-    /* 0x31 '1' */
-    {0x00,0x42,0x7F,0x40,0x00},
-
-    /* 0x32 '2' */
-    {0x42,0x61,0x51,0x49,0x46},
-
-    /* 0x33 '3' */
-    {0x21,0x41,0x45,0x4B,0x31},
-
-    /* 0x34 '4' */
-    {0x18,0x14,0x12,0x7F,0x10},
-
-    /* 0x35 '5' */
-    {0x27,0x45,0x45,0x45,0x39},
-
-    /* 0x36 '6' */
-    {0x3C,0x4A,0x49,0x49,0x30},
-
-    /* 0x37 '7' */
-    {0x01,0x71,0x09,0x05,0x03},
-
-    /* 0x38 '8' */
-    {0x36,0x49,0x49,0x49,0x36},
-
-    /* 0x39 '9' */
-    {0x06,0x49,0x49,0x29,0x1E},
-
-    /* 0x3A ':' */
-    {0x00,0x36,0x36,0x00,0x00},
-
-    /* 0x3B ';' */
-    {0x00,0x56,0x36,0x00,0x00},
-
-    /* 0x3C '<' */
-    {0x08,0x14,0x22,0x41,0x00},
-
-    /* 0x3D '=' */
-    {0x14,0x14,0x14,0x14,0x14},
-
-    /* 0x3E '>' */
-    {0x00,0x41,0x22,0x14,0x08},
-
-    /* 0x3F '?' */
-    {0x02,0x01,0x51,0x09,0x06},
-
-    /* 0x40 '@' */
-    {0x32,0x49,0x79,0x41,0x3E},
-
-    /* 0x41 'A' */
-    {0x7E,0x11,0x11,0x11,0x7E},
-
-    /* 0x42 'B' */
-    {0x7F,0x49,0x49,0x49,0x36},
-
-    /* 0x43 'C' */
-    {0x3E,0x41,0x41,0x41,0x22},
-
-    /* 0x44 'D' */
-    {0x7F,0x41,0x41,0x22,0x1C},
-
-    /* 0x45 'E' */
-    {0x7F,0x49,0x49,0x49,0x41},
-
-    /* 0x46 'F' */
-    {0x7F,0x09,0x09,0x09,0x01},
-
-    /* 0x47 'G' */
-    {0x3E,0x41,0x49,0x49,0x7A},
-
-    /* 0x48 'H' */
-    {0x7F,0x08,0x08,0x08,0x7F},
-
-    /* 0x49 'I' */
-    {0x00,0x41,0x7F,0x41,0x00},
-
-    /* 0x4A 'J' */
-    {0x20,0x40,0x41,0x3F,0x01},
-
-    /* 0x4B 'K' */
-    {0x7F,0x08,0x14,0x22,0x41},
-
-    /* 0x4C 'L' */
-    {0x7F,0x40,0x40,0x40,0x40},
-
-    /* 0x4D 'M' */
-    {0x7F,0x02,0x0C,0x02,0x7F},
-
-    /* 0x4E 'N' */
-    {0x7F,0x04,0x08,0x10,0x7F},
-
-    /* 0x4F 'O' */
-    {0x3E,0x41,0x41,0x41,0x3E},
-
-    /* 0x50 'P' */
-    {0x7F,0x09,0x09,0x09,0x06},
-
-    /* 0x51 'Q' */
-    {0x3E,0x41,0x51,0x21,0x5E},
-
-    /* 0x52 'R' */
-    {0x7F,0x09,0x19,0x29,0x46},
-
-    /* 0x53 'S' */
-    {0x46,0x49,0x49,0x49,0x31},
-
-    /* 0x54 'T' */
-    {0x01,0x01,0x7F,0x01,0x01},
-
-    /* 0x55 'U' */
-    {0x3F,0x40,0x40,0x40,0x3F},
-
-    /* 0x56 'V' */
-    {0x1F,0x20,0x40,0x20,0x1F},
-
-    /* 0x57 'W' */
-    {0x7F,0x20,0x18,0x20,0x7F},
-
-    /* 0x58 'X' */
-    {0x63,0x14,0x08,0x14,0x63},
-
-    /* 0x59 'Y' */
-    {0x07,0x08,0x70,0x08,0x07},
-
-    /* 0x5A 'Z' */
-    {0x61,0x51,0x49,0x45,0x43},
-
-    /* 0x5B '[' */
-    {0x00,0x7F,0x41,0x41,0x00},
-
-    /* 0x5C '\' */
-    {0x02,0x04,0x08,0x10,0x20},
-
-    /* 0x5D ']' */
-    {0x00,0x41,0x41,0x7F,0x00},
-
-    /* 0x5E '^' */
-    {0x04,0x02,0x01,0x02,0x04},
-
-    /* 0x5F '_' */
-    {0x40,0x40,0x40,0x40,0x40},
-
-    /* 0x60 '`' */
-    {0x00,0x01,0x02,0x04,0x00},
-
-    /* 0x61 'a' */
-    {0x20,0x54,0x54,0x54,0x78},
-
-    /* 0x62 'b' */
-    {0x7F,0x48,0x44,0x44,0x38},
-
-    /* 0x63 'c' */
-    {0x38,0x44,0x44,0x44,0x20},
-
-    /* 0x64 'd' */
-    {0x38,0x44,0x44,0x48,0x7F},
-
-    /* 0x65 'e' */
-    {0x38,0x54,0x54,0x54,0x18},
-
-    /* 0x66 'f' */
-    {0x08,0x7E,0x09,0x01,0x02},
-
-    /* 0x67 'g' */
-    {0x0C,0x52,0x52,0x52,0x3E},
-
-    /* 0x68 'h' */
-    {0x7F,0x08,0x04,0x04,0x78},
-
-    /* 0x69 'i' */
-    {0x00,0x44,0x7D,0x40,0x00},
-
-    /* 0x6A 'j' */
-    {0x20,0x40,0x44,0x3D,0x00},
-
-    /* 0x6B 'k' */
-    {0x7F,0x10,0x28,0x44,0x00},
-
-    /* 0x6C 'l' */
-    {0x00,0x41,0x7F,0x40,0x00},
-
-    /* 0x6D 'm' */
-    {0x7C,0x04,0x18,0x04,0x78},
-
-    /* 0x6E 'n' */
-    {0x7C,0x08,0x04,0x04,0x78},
-
-    /* 0x6F 'o' */
-    {0x38,0x44,0x44,0x44,0x38},
-
-    /* 0x70 'p' */
-    {0x7C,0x14,0x14,0x14,0x08},
-
-    /* 0x71 'q' */
-    {0x08,0x14,0x14,0x18,0x7C},
-
-    /* 0x72 'r' */
-    {0x7C,0x08,0x04,0x04,0x08},
-
-    /* 0x73 's' */
-    {0x48,0x54,0x54,0x54,0x20},
-
-    /* 0x74 't' */
-    {0x04,0x3F,0x44,0x40,0x20},
-
-    /* 0x75 'u' */
-    {0x3C,0x40,0x40,0x20,0x7C},
-
-    /* 0x76 'v' */
-    {0x1C,0x20,0x40,0x20,0x1C},
-
-    /* 0x77 'w' */
-    {0x3C,0x40,0x30,0x40,0x3C},
-
-    /* 0x78 'x' */
-    {0x44,0x28,0x10,0x28,0x44},
-
-    /* 0x79 'y' */
-    {0x0C,0x50,0x50,0x50,0x3C},
-
-    /* 0x7A 'z' */
-    {0x44,0x64,0x54,0x4C,0x44},
-
-    /* 0x7B '{' */
-    {0x00,0x08,0x36,0x41,0x00},
-
-    /* 0x7C '|' */
-    {0x00,0x00,0x7F,0x00,0x00},
-
-    /* 0x7D '}' */
-    {0x00,0x41,0x36,0x08,0x00},
-
-    /* 0x7E '~' */
-    {0x08,0x04,0x08,0x10,0x08}
-};
-
-
-/* --------------------------------------------------------------------------
- * Optimised character drawing
- * -------------------------------------------------------------------------- */
-
-/**
- * @brief Draw one character using a single ST7735 address window.
- *
- * Unlike the previous implementation, this does not call LCD_DrawPixel()
- * for every pixel. The complete character is assembled in RAM and sent
- * to the display in one SPI transaction.
- *
- * The character includes its blank spacing column. This is intentional:
- * when a character is redrawn, the blank column clears any pixels left
- * by the previous character.
+    {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00},
+    {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7F, 0x14, 0x7F, 0x14},
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, {0x23, 0x13, 0x08, 0x64, 0x62},
+    {0x36, 0x49, 0x55, 0x22, 0x50}, {0x00, 0x05, 0x03, 0x00, 0x00},
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, {0x00, 0x41, 0x22, 0x1C, 0x00},
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, {0x08, 0x08, 0x3E, 0x08, 0x08},
+    {0x00, 0x50, 0x30, 0x00, 0x00}, {0x08, 0x08, 0x08, 0x08, 0x08},
+    {0x00, 0x60, 0x60, 0x00, 0x00}, {0x20, 0x10, 0x08, 0x04, 0x02},
+
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, {0x00, 0x42, 0x7F, 0x40, 0x00},
+    {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4B, 0x31},
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39},
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03},
+    {0x36, 0x49, 0x49, 0x49, 0x36}, {0x06, 0x49, 0x49, 0x29, 0x1E},
+    {0x00, 0x36, 0x36, 0x00, 0x00}, {0x00, 0x56, 0x36, 0x00, 0x00},
+    {0x08, 0x14, 0x22, 0x41, 0x00}, {0x14, 0x14, 0x14, 0x14, 0x14},
+    {0x00, 0x41, 0x22, 0x14, 0x08}, {0x02, 0x01, 0x51, 0x09, 0x06},
+
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, {0x7E, 0x11, 0x11, 0x11, 0x7E},
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, {0x3E, 0x41, 0x41, 0x41, 0x22},
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, {0x7F, 0x49, 0x49, 0x49, 0x41},
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, {0x3E, 0x41, 0x49, 0x49, 0x7A},
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, {0x00, 0x41, 0x7F, 0x41, 0x00},
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, {0x7F, 0x08, 0x14, 0x22, 0x41},
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, {0x7F, 0x02, 0x0C, 0x02, 0x7F},
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, {0x3E, 0x41, 0x41, 0x41, 0x3E},
+
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, {0x3E, 0x41, 0x51, 0x21, 0x5E},
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, {0x46, 0x49, 0x49, 0x49, 0x31},
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, {0x3F, 0x40, 0x40, 0x40, 0x3F},
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, {0x7F, 0x20, 0x18, 0x20, 0x7F},
+    {0x63, 0x14, 0x08, 0x14, 0x63}, {0x07, 0x08, 0x70, 0x08, 0x07},
+    {0x61, 0x51, 0x49, 0x45, 0x43}, {0x00, 0x7F, 0x41, 0x41, 0x00},
+    {0x02, 0x04, 0x08, 0x10, 0x20}, {0x00, 0x41, 0x41, 0x7F, 0x00},
+    {0x04, 0x02, 0x01, 0x02, 0x04}, {0x40, 0x40, 0x40, 0x40, 0x40},
+
+    {0x00, 0x01, 0x02, 0x04, 0x00}, {0x20, 0x54, 0x54, 0x54, 0x78},
+    {0x7F, 0x48, 0x44, 0x44, 0x38}, {0x38, 0x44, 0x44, 0x44, 0x20},
+    {0x38, 0x44, 0x44, 0x48, 0x7F}, {0x38, 0x54, 0x54, 0x54, 0x18},
+    {0x08, 0x7E, 0x09, 0x01, 0x02}, {0x0C, 0x52, 0x52, 0x52, 0x3E},
+    {0x7F, 0x08, 0x04, 0x04, 0x78}, {0x00, 0x44, 0x7D, 0x40, 0x00},
+    {0x20, 0x40, 0x44, 0x3D, 0x00}, {0x7F, 0x10, 0x28, 0x44, 0x00},
+    {0x00, 0x41, 0x7F, 0x40, 0x00}, {0x7C, 0x04, 0x18, 0x04, 0x78},
+    {0x7C, 0x08, 0x04, 0x04, 0x78}, {0x38, 0x44, 0x44, 0x44, 0x38},
+
+    {0x7C, 0x14, 0x14, 0x14, 0x08}, {0x08, 0x14, 0x14, 0x18, 0x7C},
+    {0x7C, 0x08, 0x04, 0x04, 0x08}, {0x48, 0x54, 0x54, 0x54, 0x20},
+    {0x04, 0x3F, 0x44, 0x40, 0x20}, {0x3C, 0x40, 0x40, 0x20, 0x7C},
+    {0x1C, 0x20, 0x40, 0x20, 0x1C}, {0x3C, 0x40, 0x30, 0x40, 0x3C},
+    {0x44, 0x28, 0x10, 0x28, 0x44}, {0x0C, 0x50, 0x50, 0x50, 0x3C},
+    {0x44, 0x64, 0x54, 0x4C, 0x44}, {0x00, 0x08, 0x36, 0x41, 0x00},
+    {0x00, 0x00, 0x7F, 0x00, 0x00}, {0x00, 0x41, 0x36, 0x08, 0x00},
+    {0x08, 0x04, 0x08, 0x10, 0x08}};
+
+/*
+ * ============================================================
+ * Character drawing
+ * ============================================================
  */
-void LCD_WriteChar(char c)
-{
-    if (c < 0x20 || c > 0x7E)
-        return;
 
-    const uint8_t *glyph =
-        font5x7[(uint8_t)c - 0x20];
+void LCD_WriteChar(char c) {
+  if (c < 0x20 || c > 0x7E) {
+    return;
+  }
 
-    /*
-     * Character dimensions:
-     *
-     *   5 columns of glyph data
-     *   + 1 blank spacing column
-     *
-     * At text_size 2 this becomes:
-     *
-     *   12 x 14 pixels
-     */
-    uint16_t width =
-        6U * text_size;
+  const uint8_t *glyph = font5x7[(uint8_t)c - 0x20U];
 
-    uint16_t height =
-        7U * text_size;
+  uint16_t width = 6U * text_size;
 
-    /*
-     * Maximum size supported without dynamic allocation.
-     *
-     * 6 * 8 = 48 pixels wide
-     * 7 * 8 = 56 pixels high
-     *
-     * 48 * 56 * 2 = 5376 bytes.
-     */
-    static uint8_t pixel_buffer[6 * 8 * 7 * 8 * 2];
+  uint16_t height = 7U * text_size;
 
-    if (width > 48 || height > 56)
-        return;
+  static uint8_t pixel_buffer[6U * 8U * 7U * 8U * 2U];
 
-    if (cursor_x >= LCD_WIDTH ||
-        cursor_y >= LCD_HEIGHT)
-        return;
+  if (width > 48U || height > 56U) {
+    return;
+  }
 
-    uint16_t actual_width = width;
-    uint16_t actual_height = height;
+  if (cursor_x >= LCD_WIDTH || cursor_y >= LCD_HEIGHT) {
+    return;
+  }
 
-    if (cursor_x + actual_width > LCD_WIDTH)
-    {
-        actual_width =
-            LCD_WIDTH - cursor_x;
+  uint16_t actual_width = width;
+
+  uint16_t actual_height = height;
+
+  if (cursor_x + actual_width > LCD_WIDTH) {
+    actual_width = LCD_WIDTH - cursor_x;
+  }
+
+  if (cursor_y + actual_height > LCD_HEIGHT) {
+    actual_height = LCD_HEIGHT - cursor_y;
+  }
+
+  uint32_t buffer_index = 0U;
+
+  uint8_t color_high = (uint8_t)(text_color >> 8);
+
+  uint8_t color_low = (uint8_t)(text_color & 0xFFU);
+
+  uint8_t background_high = (uint8_t)(text_background >> 8);
+
+  uint8_t background_low = (uint8_t)(text_background & 0xFFU);
+
+  for (uint16_t y = 0U; y < actual_height; y++) {
+    uint16_t source_y = y / text_size;
+
+    for (uint16_t x = 0U; x < actual_width; x++) {
+      uint16_t source_x = x / text_size;
+
+      bool pixel_on = false;
+
+      if (source_x < 5U && source_y < 7U) {
+        pixel_on = (glyph[source_x] & (1U << source_y)) != 0U;
+      }
+
+      if (pixel_on) {
+        pixel_buffer[buffer_index++] = color_high;
+
+        pixel_buffer[buffer_index++] = color_low;
+      } else {
+        pixel_buffer[buffer_index++] = background_high;
+
+        pixel_buffer[buffer_index++] = background_low;
+      }
     }
+  }
 
-    if (cursor_y + actual_height > LCD_HEIGHT)
-    {
-        actual_height =
-            LCD_HEIGHT - cursor_y;
-    }
+  LCD_SetAddressWindow(cursor_x, cursor_y, cursor_x + actual_width - 1U,
+                       cursor_y + actual_height - 1U);
 
-    /*
-     * Build the complete character image.
-     *
-     * Both foreground and background pixels are written.
-     * Therefore a new character completely replaces the old
-     * character underneath it.
-     */
-    uint32_t buffer_index = 0;
+  LCD_WriteData(pixel_buffer, (uint16_t)buffer_index);
 
-    uint8_t color_high =
-        (uint8_t)(text_color >> 8);
-
-    uint8_t color_low =
-        (uint8_t)(text_color & 0xFF);
-
-    uint8_t background_high =
-        (uint8_t)(text_background >> 8);
-
-    uint8_t background_low =
-        (uint8_t)(text_background & 0xFF);
-
-    for (uint16_t y = 0;
-         y < actual_height;
-         y++)
-    {
-        uint16_t source_y =
-            y / text_size;
-
-        for (uint16_t x = 0;
-             x < actual_width;
-             x++)
-        {
-            uint16_t source_x =
-                x / text_size;
-
-            bool pixel_on = false;
-
-            /*
-             * The sixth column is the spacing column.
-             */
-            if (source_x < 5 &&
-                source_y < 7)
-            {
-                pixel_on =
-                    (glyph[source_x] &
-                     (1U << source_y)) != 0;
-            }
-
-            if (pixel_on)
-            {
-                pixel_buffer[buffer_index++] =
-                    color_high;
-
-                pixel_buffer[buffer_index++] =
-                    color_low;
-            }
-            else
-            {
-                pixel_buffer[buffer_index++] =
-                    background_high;
-
-                pixel_buffer[buffer_index++] =
-                    background_low;
-            }
-        }
-    }
-
-    LCD_SetAddressWindow(
-        cursor_x,
-        cursor_y,
-        cursor_x + actual_width - 1,
-        cursor_y + actual_height - 1
-    );
-
-    LCD_WriteData(
-        pixel_buffer,
-        (uint16_t)buffer_index
-    );
-
-    /*
-     * Advance by the complete character width.
-     */
-    cursor_x += width;
+  cursor_x += width;
 }
 
-
-/**
- * @brief Print a null-terminated string.
+/*
+ * ============================================================
+ * String output
+ * ============================================================
  */
-void LCD_Print(const char *str)
-{
-    if (str == NULL)
-        return;
 
-    while (*str)
-    {
-        if (*str == '\n')
-        {
-            cursor_x = 0;
+void LCD_Print(const char *str) {
+  if (str == NULL) {
+    return;
+  }
 
-            cursor_y +=
-                8U * text_size;
-        }
-        else
-        {
-            LCD_WriteChar(*str);
-        }
+  while (*str) {
+    if (*str == '\n') {
+      cursor_x = 0U;
 
-        str++;
+      cursor_y += 8U * text_size;
+    } else {
+      LCD_WriteChar(*str);
     }
+
+    str++;
+  }
 }
 
-
-/* --------------------------------------------------------------------------
- * GNSS time display
- * -------------------------------------------------------------------------- */
+/*
+ * ============================================================
+ * Application display requests
+ * ============================================================
+ */
 
 /**
- * @brief Request an update of the displayed UTC date and time.
+ * @brief Request a PPS UTC time update.
  *
- * Copies the latest GNSS date/time into the LCD module and marks an
- * update as pending. The actual display operation is performed by
- * LCD_Process() so that blocking SPI transfers never occur inside
- * the GNSS receive interrupt/callback.
- *
- * @param datetime Pointer to the latest GNSS UTC date/time.
+ * Safe to call from an interrupt.
  */
-void LCD_RequestTimeUpdate(
-    const GNSS_DateTime_t *datetime)
-{
-    if (datetime == NULL)
-        return;
+void LCD_RequestTimeUpdate(const GNSS_DateTime_t *datetime) {
+  if (datetime == NULL) {
+    return;
+  }
 
-    __disable_irq();
+  __disable_irq();
 
-    display_datetime = *datetime;
-    time_update_pending = true;
+  display_datetime = *datetime;
 
-    __enable_irq();
+  time_update_pending = true;
+
+  __enable_irq();
 }
 
+/**
+ * @brief Request an impulse indication.
+ *
+ * Safe to call from an interrupt.
+ *
+ * The actual SPI display operation is deferred until
+ * LCD_Process().
+ */
+void LCD_RequestImpulse(char channel) {
+  if (channel != '1' && channel != '2') {
+    return;
+  }
+
+  __disable_irq();
+
+  impulse_channel = channel;
+
+  impulse_start_time = HAL_GetTick();
+
+  impulse_pending = true;
+
+  __enable_irq();
+}
+
+/*
+ * ============================================================
+ * Display rendering
+ * ============================================================
+ */
 
 /**
- * @brief Process a pending GNSS date/time display update.
- *
- * The display is updated only when GNSS has supplied new time data.
- * The previous implementation cleared the entire LCD before drawing
- * the new time. That required transferring every pixel on the display.
- *
- * Instead, each character is now drawn as a complete rectangle using
- * the LCD background colour for blank pixels. Consequently a new
- * character completely replaces the old character without requiring
- * a full-screen clear.
+ * @brief Draw the current PPS-disciplined UTC time.
  */
-void LCD_Process(void)
-{
-    GNSS_DateTime_t datetime;
+static void LCD_DrawTimeScreen(const GNSS_DateTime_t *datetime) {
+  char display_string[32];
 
-    __disable_irq();
+  uint8_t pos = 0U;
 
-    if (!time_update_pending)
-    {
-        __enable_irq();
-        return;
+  /*
+   * UTC:
+   */
+  display_string[pos++] = 'U';
+  display_string[pos++] = 'T';
+  display_string[pos++] = 'C';
+  display_string[pos++] = ':';
+
+  display_string[pos++] = '\n';
+
+  /*
+   * DD/MM/YYYY
+   */
+  /* Date: DD/MM/YYYY */
+
+  display_string[pos++] = (char)('0' + (datetime->date.day / 10U));
+
+  display_string[pos++] = (char)('0' + (datetime->date.day % 10U));
+
+  display_string[pos++] = '/';
+
+  display_string[pos++] = (char)('0' + (datetime->date.month / 10U));
+
+  display_string[pos++] = (char)('0' + (datetime->date.month % 10U));
+
+  display_string[pos++] = '/';
+
+  display_string[pos++] = (char)('0' + ((datetime->date.year / 1000U) % 10U));
+
+  display_string[pos++] = (char)('0' + ((datetime->date.year / 100U) % 10U));
+
+  display_string[pos++] = (char)('0' + ((datetime->date.year / 10U) % 10U));
+
+  display_string[pos++] = (char)('0' + (datetime->date.year % 10U));
+
+  display_string[pos++] = '\n';
+
+  /*
+   * HH:MM:SS
+   */
+  display_string[pos++] = '0' + (datetime->time.hours / 10U);
+
+  display_string[pos++] = '0' + (datetime->time.hours % 10U);
+
+  display_string[pos++] = ':';
+
+  display_string[pos++] = '0' + (datetime->time.minutes / 10U);
+
+  display_string[pos++] = '0' + (datetime->time.minutes % 10U);
+
+  display_string[pos++] = ':';
+
+  display_string[pos++] = '0' + (datetime->time.seconds / 10U);
+
+  display_string[pos++] = '0' + (datetime->time.seconds % 10U);
+
+  display_string[pos] = '\0';
+
+  LCD_SetTextColor(LCD_CYAN);
+
+  LCD_SetTextBackground(LCD_BLACK);
+
+  LCD_SetTextSize(2U);
+
+  LCD_SetCursor(10U, 20U);
+
+  LCD_Print(display_string);
+}
+
+/**
+ * @brief Draw the one-second impulse indication.
+ */
+static void LCD_DrawImpulseScreen(char channel) {
+  char display_string[32];
+
+  display_string[0] = 'I';
+  display_string[1] = 'M';
+  display_string[2] = 'P';
+  display_string[3] = 'U';
+  display_string[4] = 'L';
+  display_string[5] = 'S';
+  display_string[6] = 'E';
+  display_string[7] = '\n';
+
+  display_string[8] = 'C';
+  display_string[9] = 'H';
+  display_string[10] = 'A';
+  display_string[11] = 'N';
+  display_string[12] = 'N';
+  display_string[13] = 'E';
+  display_string[14] = 'L';
+  display_string[15] = ' ';
+  display_string[16] = channel;
+  display_string[17] = '\0';
+
+  LCD_SetTextColor(LCD_YELLOW);
+
+  LCD_SetTextBackground(LCD_BLACK);
+
+  LCD_SetTextSize(2U);
+
+  /*
+   * Center the text approximately.
+   */
+  LCD_SetCursor(10U, 40U);
+
+  LCD_Print(display_string);
+}
+
+/*
+ * ============================================================
+ * Main LCD processing
+ * ============================================================
+ */
+
+/**
+ * @brief Process pending LCD updates.
+ *
+ * This function should be called continuously from the main
+ * application loop.
+ *
+ * Example:
+ *
+ *     while (1)
+ *     {
+ *         LCD_Process();
+ *         ...
+ *     }
+ */
+void LCD_Process(void) {
+  bool process_impulse = false;
+  bool process_time = false;
+
+  char channel = '\0';
+
+  GNSS_DateTime_t datetime;
+
+  /*
+   * ========================================================
+   * Check for a new impulse
+   * ========================================================
+   */
+
+  __disable_irq();
+
+  if (impulse_pending) {
+    impulse_pending = false;
+
+    channel = impulse_channel;
+
+    process_impulse = true;
+  }
+
+  /*
+   * Copy the latest UTC time.
+   */
+  datetime = display_datetime;
+
+  /*
+   * ========================================================
+   * Check whether impulse display has expired
+   * ========================================================
+   */
+
+  bool impulse_active = (current_screen == LCD_SCREEN_IMPULSE);
+
+  uint32_t impulse_time = impulse_start_time;
+
+  __enable_irq();
+
+  /*
+   * New impulse takes priority over everything.
+   */
+  if (process_impulse) {
+    /*
+     * Start/restart the one-second indication.
+     */
+    LCD_FillScreen(LCD_BLACK);
+
+    LCD_DrawImpulseScreen(channel);
+
+    current_screen = LCD_SCREEN_IMPULSE;
+
+    return;
+  }
+
+  /*
+   * ========================================================
+   * Impulse timeout
+   * ========================================================
+   */
+
+  if (impulse_active) {
+    uint32_t now = HAL_GetTick();
+
+    if ((now - impulse_time) >= LCD_IMPULSE_DISPLAY_MS) {
+      /*
+       * One second has elapsed.
+       *
+       * Return to the latest PPS UTC time.
+       */
+      LCD_FillScreen(LCD_BLACK);
+
+      LCD_DrawTimeScreen(&datetime);
+
+      current_screen = LCD_SCREEN_TIME;
+
+      return;
     }
+
+    /*
+     * Still displaying the impulse.
+     */
+    return;
+  }
+
+  /*
+   * ========================================================
+   * Normal UTC time update
+   * ========================================================
+   */
+
+  __disable_irq();
+
+  if (time_update_pending) {
+    time_update_pending = false;
 
     datetime = display_datetime;
 
-    time_update_pending = false;
+    process_time = true;
+  }
 
-    __enable_irq();
+  __enable_irq();
 
+  if (process_time) {
+    LCD_FillScreen(LCD_BLACK);
 
-    /*
-     * Construct the display text.
-     *
-     * Layout:
-     *
-     *     UTC:
-     *     DD/MM/YYYY
-     *     HH:MM:SS
-     */
-    char display_string[32];
+    LCD_DrawTimeScreen(&datetime);
 
-    uint8_t pos = 0;
-
-
-    /* "UTC:" */
-
-    display_string[pos++] = 'U';
-    display_string[pos++] = 'T';
-    display_string[pos++] = 'C';
-    display_string[pos++] = ':';
-
-    display_string[pos++] = '\n';
-
-
-    /* Date: DD/MM/YYYY */
-
-    display_string[pos++] =
-        '0' + (datetime.date.day / 10);
-
-    display_string[pos++] =
-        '0' + (datetime.date.day % 10);
-
-    display_string[pos++] = '/';
-
-    display_string[pos++] =
-        '0' + (datetime.date.month / 10);
-
-    display_string[pos++] =
-        '0' + (datetime.date.month % 10);
-
-    display_string[pos++] = '/';
-
-    display_string[pos++] =
-        '0' + ((datetime.date.year / 1000) % 10);
-
-    display_string[pos++] =
-        '0' + ((datetime.date.year / 100) % 10);
-
-    display_string[pos++] =
-        '0' + ((datetime.date.year / 10) % 10);
-
-    display_string[pos++] =
-        '0' + (datetime.date.year % 10);
-
-    display_string[pos++] = '\n';
-
-
-    /* Time: HH:MM:SS */
-
-    display_string[pos++] =
-        '0' + (datetime.time.hours / 10);
-
-    display_string[pos++] =
-        '0' + (datetime.time.hours % 10);
-
-    display_string[pos++] = ':';
-
-    display_string[pos++] =
-        '0' + (datetime.time.minutes / 10);
-
-    display_string[pos++] =
-        '0' + (datetime.time.minutes % 10);
-
-    display_string[pos++] = ':';
-
-    display_string[pos++] =
-        '0' + (datetime.time.seconds / 10);
-
-    display_string[pos++] =
-        '0' + (datetime.time.seconds % 10);
-
-    display_string[pos] = '\0';
-
-
-    /*
-     * Configure text rendering.
-     */
-    LCD_SetTextColor(LCD_CYAN);
-
-    LCD_SetTextBackground(LCD_BLACK);
-
-    LCD_SetTextSize(2);
-
-    LCD_SetCursor(25, 20);
-
-
-    /*
-     * No LCD_FillScreen() here.
-     *
-     * Every character writes its own background pixels, so the old
-     * text is automatically erased as the new text is drawn.
-     */
-    LCD_Print(display_string);
+    current_screen = LCD_SCREEN_TIME;
+  }
 }
