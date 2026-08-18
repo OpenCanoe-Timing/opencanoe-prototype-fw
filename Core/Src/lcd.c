@@ -572,16 +572,12 @@ static void LCD_DrawWarningSymbol(uint16_t center_x, uint16_t top_y,
 
     uint16_t y = top_y + i;
 
-    uint16_t left = center_x - (uint16_t)((size * i) / (2U * size));
-
-    uint16_t right = center_x + (uint16_t)((size * i) / (2U * size));
-
     /*
      * Correctly form the diagonal based on the current height.
      */
-    left = center_x - (uint16_t)((size / 2U) * i / size);
+    uint16_t left = center_x - (uint16_t)((size / 2U) * i / size);
 
-    right = center_x + (uint16_t)((size / 2U) * i / size);
+    uint16_t right = center_x + (uint16_t)((size / 2U) * i / size);
 
     if (left < LCD_WIDTH && y < LCD_HEIGHT) {
       LCD_DrawPixel(left, y, color);
@@ -891,12 +887,6 @@ void LCD_Process(void) {
     }
 
     __enable_irq();
-
-    impulse_displayed = false;
-
-    displayed_impulse_channel = '\0';
-
-    displayed_impulse_sequence = 0U;
 
     impulse_displayed = false;
 
