@@ -30,66 +30,24 @@
 #include <stdint.h>
 #include <string.h>
 
-/*
- * ============================================================
- * Configuration
- * ============================================================
- */
-
-/*
- * Prevent a single physical input from producing multiple
- * accepted timing events.
- */
 #define IMPULSE_LOCKOUT_MS 50U
 
-/*
- * TIM2:
- *
- *     1 tick = 10 us
- *
- * Therefore:
- *
- *     10 ticks = 100 us
- */
 #define TIM2_TICKS_PER_100US 10U
-
-/*
- * ============================================================
- * Timer state
- * ============================================================
- */
 
 extern TIM_HandleTypeDef htim2;
 
-/*
- * Last HAL tick at which each timing channel generated an
- * accepted impulse.
- *
- * Index 0 = channel 2
- * Index 1 = channel 3
- */
-static uint32_t last_impulse_time[2] = {0U};
+static uint32_t last_impulse_time[2] = {0U, 0U};
 
-/*
- * ============================================================
- * Utility functions
- * ============================================================
- */
+/* --------------------------------------------------------------------------
+ * Utility
+ * -------------------------------------------------------------------------- */
 
-/**
- * @brief Convert uint64_t to decimal ASCII.
- *
- * This avoids depending on %llu support in the embedded
- * printf implementation.
- */
 static uint8_t RTC_Uint64ToString(uint64_t value, char *buffer,
                                   uint8_t buffer_size) {
   char temporary[20];
+
   uint8_t length = 0U;
 
-  /*
-   * uint64_t requires at most 20 decimal digits.
-   */
   do {
     if (length >= sizeof(temporary)) {
       return 0U;
@@ -101,16 +59,10 @@ static uint8_t RTC_Uint64ToString(uint64_t value, char *buffer,
 
   } while (value != 0ULL);
 
-  /*
-   * Need room for null terminator.
-   */
   if ((uint8_t)(length + 1U) > buffer_size) {
     return 0U;
   }
 
-  /*
-   * Reverse the digits.
-   */
   for (uint8_t i = 0U; i < length; i++) {
     buffer[i] = temporary[length - 1U - i];
   }
@@ -120,39 +72,10 @@ static uint8_t RTC_Uint64ToString(uint64_t value, char *buffer,
   return length;
 }
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * Timer initialisation
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
-/**
- * @brief Initialise the high-resolution timing timer.
- *
- * TIM2 is configured by CubeMX.
- *
- * Expected configuration:
- *
- *     Timer tick = 10 us
- *     Period     = 0xFFFFFFFF
- *
- * Channel 1:
- *
- *     GNSS PPS
- *
- * Channel 2:
- *
- *     Timing input 1
- *
- * Channel 3:
- *
- *     Timing input 2
- *
- * The GNSS PPS input must also be configured as the TIM2
- * slave-mode reset trigger.
- *
- * Therefore TIM2 is reset to zero by hardware at every PPS.
- */
 void TIM_Init(void) {
   HAL_TIM_Base_Start(&htim2);
 
@@ -163,66 +86,41 @@ void TIM_Init(void) {
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3);
 }
 
-/*
- * ============================================================
- * Input capture callback
- * ============================================================
- */
+/* --------------------------------------------------------------------------
+ * Input capture
+ * -------------------------------------------------------------------------- */
 
-/**
- * @brief Handle TIM2 input capture events.
- *
- * Channel assignment:
- *
- *     CH1 = GNSS PPS
- *     CH2 = timing input 1
- *     CH3 = timing input 2
- *
- * The PPS establishes the UTC second boundary.
- *
- * TIM2 is reset in hardware by the PPS trigger.
- */
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-  /*
-   * Only process TIM2.
-   */
   if (htim->Instance != TIM2) {
     return;
   }
 
-  /*
-   * ========================================================
+  /* ============================================================
    * GNSS PPS
-   * ========================================================
+   * ============================================================
    */
+
   if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
-    /*
-     * Capture the HAL tick as close to the PPS interrupt
-     * as possible.
-     */
     uint32_t pps_tick = HAL_GetTick();
 
     /*
-     * TIM2 has already been reset by the hardware
-     * slave-mode reset trigger.
+     * TIM2 is reset by the hardware PPS trigger.
      *
-     * GNSS_ProcessPPS() determines which UTC second
-     * this PPS represents and updates the UTC clock.
-     *
-     * It also requests the LCD time update.
+     * GNSS_ProcessPPS() establishes the UTC second
+     * represented by this physical PPS.
      */
     (void)GNSS_ProcessPPS(pps_tick);
 
     return;
   }
 
-  /*
-   * ========================================================
-   * Timing channels
-   * ========================================================
+  /* ============================================================
+   * Timing inputs
+   * ============================================================
    */
 
   char channel_impulse = '\0';
+
   uint8_t channel_index = 0U;
 
   switch (htim->Channel) {
@@ -245,57 +143,54 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
     return;
   }
 
-  /*
-   * ========================================================
+  /* ============================================================
    * Input lockout
-   * ========================================================
+   * ============================================================
    */
 
   uint32_t now = HAL_GetTick();
 
-  if ((now - last_impulse_time[channel_index]) < IMPULSE_LOCKOUT_MS) {
+  /*
+   * Unsigned subtraction intentionally handles HAL_GetTick()
+   * rollover correctly.
+   */
+  if ((uint32_t)(now - last_impulse_time[channel_index]) < IMPULSE_LOCKOUT_MS) {
     return;
   }
 
   last_impulse_time[channel_index] = now;
 
-  /*
-   * ========================================================
-   * Check GNSS lock
-   * ========================================================
-   *
-   * Do not produce a UTC timestamp until PPS has
-   * established the current UTC second.
+  /* ============================================================
+   * Require PPS lock
+   * ============================================================
    */
+
   uint64_t current_unix_100us;
 
   if (!GNSS_GetLastUnix100us(&current_unix_100us)) {
     return;
   }
 
-  /*
-   * ========================================================
-   * Read TIM2
-   * ========================================================
-   *
-   * TIM2 was reset at the PPS.
-   *
-   * Therefore:
-   *
-   *     TIM2 CNT = elapsed time since PPS
+  /* ============================================================
+   * Calculate timestamp
+   * ============================================================
    */
+
   uint32_t timer_ticks = __HAL_TIM_GET_COUNTER(&htim2);
 
-  /*
-   * Convert the elapsed time to 100 us units.
-   */
   uint64_t timestamp_100us =
       current_unix_100us + ((uint64_t)timer_ticks / TIM2_TICKS_PER_100US);
 
-  /*
-   * ========================================================
-   * Convert timestamp to ASCII
-   * ========================================================
+  /* ============================================================
+   * Notify LCD
+   * ============================================================
+   */
+
+  LCD_RequestImpulse(channel_impulse);
+
+  /* ============================================================
+   * Convert timestamp
+   * ============================================================
    */
 
   char timestamp_string[24];
@@ -307,17 +202,13 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
     return;
   }
 
-  /*
-   * ========================================================
-   * Build output packet
-   * ========================================================
+  /* ============================================================
+   * Build output
    *
    *     <timestamp>,<channel>\r\n
-   *
-   * Example:
-   *
-   *     17868723451234,1
+   * ============================================================
    */
+
   char buffer[32];
 
   uint8_t position = 0U;
@@ -333,21 +224,10 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
   buffer[position++] = '\r';
   buffer[position++] = '\n';
 
-  /*
-   * ========================================================
-   * Transmit timing event
-   * ========================================================
+  /* ============================================================
+   * Transmit
+   * ============================================================
    */
-  UART_Write(COMPUTER_UART, (const uint8_t *)buffer, position);
 
-  /*
-   * ========================================================
-   * Request LCD impulse indication
-   * ========================================================
-   *
-   * This only updates internal LCD state.
-   *
-   * No SPI transfer is performed from the interrupt.
-   */
-  LCD_RequestImpulse(channel_impulse);
+  UART_Write(COMPUTER_UART, (const uint8_t *)buffer, position);
 }

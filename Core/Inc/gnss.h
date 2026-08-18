@@ -26,138 +26,90 @@
 
 /**
  * @brief UTC time of day.
- *
- * The date/time initially comes from an NMEA RMC sentence.
- * The PPS signal is then used to establish the actual UTC
- * second boundary.
  */
-typedef struct
-{
-    uint8_t hours;          /**< 0-23 */
-    uint8_t minutes;        /**< 0-59 */
-    uint8_t seconds;        /**< 0-59 */
-    uint16_t milliseconds;  /**< 0-999 */
-} GNSS_Time_t;
+typedef struct {
+  uint8_t hours;
+  uint8_t minutes;
+  uint8_t seconds;
+  uint16_t milliseconds;
 
+} GNSS_Time_t;
 
 /**
  * @brief UTC calendar date.
- *
- * NMEA transmits a two-digit year, which is interpreted as
- * 2000 + yy.
  */
-typedef struct
-{
-    uint8_t day;            /**< 1-31 */
-    uint8_t month;          /**< 1-12 */
-    uint16_t year;          /**< e.g. 2026 */
+typedef struct {
+  uint8_t day;
+  uint8_t month;
+  uint16_t year;
+
 } GNSS_Date_t;
 
-
 /**
- * @brief Last known UTC date/time.
+ * @brief UTC date/time and fix status.
  */
-typedef struct
-{
-    GNSS_Time_t time;
-    GNSS_Date_t date;
+typedef struct {
+  GNSS_Time_t time;
+  GNSS_Date_t date;
 
-    /**
-     * @brief True when the GNSS receiver reported a valid fix.
-     */
-    bool fix_valid;
+  bool fix_valid;
 
 } GNSS_DateTime_t;
-
 
 /**
  * @brief Diagnostic counters.
  */
-typedef struct
-{
-    /** RMC sentences successfully parsed and applied. */
-    uint32_t rmc_parsed;
-
-    /** Sentences rejected due to a checksum mismatch. */
-    uint32_t checksum_failures;
-
-    /** Times the line buffer overflowed. */
-    uint32_t line_overflows;
+typedef struct {
+  uint32_t rmc_parsed;
+  uint32_t checksum_failures;
+  uint32_t line_overflows;
 
 } GNSS_Stats_t;
-
 
 /**
  * @brief Initialise the GNSS module.
  */
 void GNSS_Init(void);
 
-
 /**
- * @brief Retrieve a snapshot of the GNSS diagnostic counters.
- *
- * @param stats Pointer to a GNSS_Stats_t to populate.
+ * @brief Retrieve GNSS statistics.
  */
 void GNSS_GetStats(GNSS_Stats_t *stats);
 
-
 /**
- * @brief Retrieve the last UTC date/time established by PPS.
- *
- * This is the time currently considered to be the UTC time
- * at the beginning of the most recent PPS-defined second.
- *
- * @param datetime Pointer to a GNSS_DateTime_t to populate.
- *
- * @return true if UTC has been established by a PPS.
+ * @brief Retrieve the last RMC UTC date/time.
  */
 bool GNSS_GetLastUTC(GNSS_DateTime_t *datetime);
 
-
 /**
- * @brief Convert a UTC date/time to Unix time in 100 us units.
- *
- * Unix epoch is:
- *
- *     1970-01-01 00:00:00 UTC
- *
- * @param datetime UTC date/time to convert.
- *
- * @return Number of 100 us intervals since the Unix epoch.
+ * @brief Convert UTC date/time to Unix time in 100 us units.
  */
-uint64_t GNSS_DateTimeToUnix100us(
-    const GNSS_DateTime_t *datetime);
-
+uint64_t GNSS_DateTimeToUnix100us(const GNSS_DateTime_t *datetime);
 
 /**
  * @brief Retrieve the current PPS-disciplined Unix timestamp.
  *
- * The returned timestamp represents the beginning of the
- * current UTC second established by PPS.
- *
- * @param timestamp Pointer to receive the timestamp.
- *
- * @return true if UTC has been established by PPS.
+ * This is the timestamp corresponding to the beginning of
+ * the current UTC second.
  */
 bool GNSS_GetLastUnix100us(uint64_t *timestamp);
 
-
 /**
- * @brief Apply a GNSS PPS pulse to the UTC clock.
+ * @brief Process a physical GNSS PPS event.
  *
- * This function must be called from the PPS interrupt.
+ * The latest valid RMC sentence is associated with the
+ * physical PPS and the UTC timestamp is advanced to the
+ * corresponding second boundary.
  *
- * The most recently received RMC sentence is compared with
- * the PPS reception time to determine which UTC second the
- * pulse represents.
+ * @param pps_tick HAL millisecond tick at the PPS interrupt.
  *
- * Once the PPS has established UTC, the LCD is requested to
- * display the new time.
- *
- * @param pps_tick HAL tick corresponding to the PPS event.
- *
- * @return true if the PPS successfully established UTC.
+ * @return true if the PPS established a valid UTC lock.
  */
 bool GNSS_ProcessPPS(uint32_t pps_tick);
+
+/**
+ * @brief Determine whether GNSS PPS UTC lock has been achieved.
+ */
+bool GNSS_IsPPSLocked(void);
 
 #endif /* GNSS_H */

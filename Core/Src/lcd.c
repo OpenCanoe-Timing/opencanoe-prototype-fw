@@ -7,30 +7,18 @@
  * Copyright (c) 2026 Alexander Ellul.
  *
  * SPDX-License-Identifier: GPL-3.0-only
- *
- * This file is part of the OpenCanoe Timing System prototype firmware.
- *
- * This software is licensed under the GNU General Public License v3.0.
- * See the LICENSE.md file in the root directory of this project for details.
- *
- * This software is provided "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * either expressed or implied.
- *
  */
 
 #include "lcd.h"
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
 
 extern SPI_HandleTypeDef hspi2;
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * ST7735 pins
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 #define LCD_CS_GPIO_Port GPIOC
 #define LCD_CS_Pin GPIO_PIN_9
@@ -41,35 +29,25 @@ extern SPI_HandleTypeDef hspi2;
 #define LCD_RST_GPIO_Port GPIOC
 #define LCD_RST_Pin GPIO_PIN_7
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * ST7735 commands
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
-#define ST7735_SWRESET 0x01U
-#define ST7735_SLPOUT 0x11U
-#define ST7735_COLMOD 0x3AU
-#define ST7735_MADCTL 0x36U
-#define ST7735_CASET 0x2AU
-#define ST7735_RASET 0x2BU
-#define ST7735_RAMWR 0x2CU
-#define ST7735_DISPON 0x29U
-#define ST7735_INVOFF 0x20U
+#define ST7735_SWRESET 0x01
+#define ST7735_SLPOUT 0x11
+#define ST7735_COLMOD 0x3A
+#define ST7735_MADCTL 0x36
+#define ST7735_CASET 0x2A
+#define ST7735_RASET 0x2B
+#define ST7735_RAMWR 0x2C
+#define ST7735_DISPON 0x29
+#define ST7735_INVOFF 0x20
 
-/*
- * ============================================================
- * Application timing
- * ============================================================
- */
+/* --------------------------------------------------------------------------
+ * Application display state
+ * -------------------------------------------------------------------------- */
 
 #define LCD_IMPULSE_DISPLAY_MS 1000U
-
-/*
- * ============================================================
- * Internal state
- * ============================================================
- */
 
 static uint16_t cursor_x = 0U;
 static uint16_t cursor_y = 0U;
@@ -79,38 +57,50 @@ static uint16_t text_background = LCD_BLACK;
 
 static uint8_t text_size = 1U;
 
-/*
- * Last PPS-disciplined UTC time.
- */
 static volatile GNSS_DateTime_t display_datetime = {0};
 
 static volatile bool time_update_pending = false;
 
 /*
- * Impulse display state.
+ * False until the first valid PPS has established UTC.
+ */
+static volatile bool gnss_pps_locked = false;
+
+/*
+ * Timing impulse display state.
  */
 static volatile bool impulse_pending = false;
 
+static volatile bool impulse_displayed = false;
+
 static volatile char impulse_channel = '\0';
 
-static volatile uint32_t impulse_start_time = 0U;
+static volatile char displayed_impulse_channel = '\0';
+
+static volatile uint32_t impulse_start_tick = 0U;
 
 /*
- * Which screen is currently displayed.
+ * Used to identify a new impulse event.
+ *
+ * This increments every time LCD_RequestImpulse() is called.
+ * It prevents LCD_Process() from accidentally clearing or
+ * overwriting a newer impulse with an older one.
  */
-typedef enum {
-  LCD_SCREEN_TIME = 0,
-  LCD_SCREEN_IMPULSE
-
-} LCD_Screen_t;
-
-static LCD_Screen_t current_screen = LCD_SCREEN_TIME;
+static volatile uint32_t impulse_sequence = 0U;
 
 /*
- * ============================================================
+ * Sequence number of the impulse currently displayed.
+ */
+static uint32_t displayed_impulse_sequence = 0U;
+
+/*
+ * Used to ensure the initial lock message is drawn.
+ */
+static bool display_initialised = false;
+
+/* --------------------------------------------------------------------------
  * GPIO
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 static void LCD_CS_Low(void) {
   HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_RESET);
@@ -138,14 +128,13 @@ static void LCD_Reset(void) {
   HAL_Delay(120U);
 }
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * SPI
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 static void LCD_WriteCommand(uint8_t command) {
   LCD_CS_Low();
+
   LCD_DC_Low();
 
   HAL_SPI_Transmit(&hspi2, &command, 1U, HAL_MAX_DELAY);
@@ -155,6 +144,7 @@ static void LCD_WriteCommand(uint8_t command) {
 
 static void LCD_WriteData(uint8_t *data, uint16_t length) {
   LCD_CS_Low();
+
   LCD_DC_High();
 
   HAL_SPI_Transmit(&hspi2, data, length, HAL_MAX_DELAY);
@@ -164,19 +154,14 @@ static void LCD_WriteData(uint8_t *data, uint16_t length) {
 
 static void LCD_WriteDataByte(uint8_t data) { LCD_WriteData(&data, 1U); }
 
-/*
- * ============================================================
- * ST7735 address window
- * ============================================================
- */
+/* --------------------------------------------------------------------------
+ * Address window
+ * -------------------------------------------------------------------------- */
 
 static void LCD_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1,
                                  uint16_t y1) {
   uint8_t data[4];
 
-  /*
-   * Column address.
-   */
   LCD_WriteCommand(ST7735_CASET);
 
   data[0] = (uint8_t)(x0 >> 8);
@@ -186,9 +171,6 @@ static void LCD_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1,
 
   LCD_WriteData(data, 4U);
 
-  /*
-   * Row address.
-   */
   LCD_WriteCommand(ST7735_RASET);
 
   data[0] = (uint8_t)(y0 >> 8);
@@ -198,66 +180,44 @@ static void LCD_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1,
 
   LCD_WriteData(data, 4U);
 
-  /*
-   * Start RAM write.
-   */
   LCD_WriteCommand(ST7735_RAMWR);
 }
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * Initialisation
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 void LCD_Init(void) {
   LCD_Reset();
 
-  /*
-   * Software reset.
-   */
   LCD_WriteCommand(ST7735_SWRESET);
 
   HAL_Delay(150U);
 
-  /*
-   * Exit sleep.
-   */
   LCD_WriteCommand(ST7735_SLPOUT);
 
   HAL_Delay(120U);
 
-  /*
-   * RGB565.
-   */
   LCD_WriteCommand(ST7735_COLMOD);
 
-  LCD_WriteDataByte(0x05U);
+  uint8_t color_mode = 0x05;
+
+  LCD_WriteDataByte(color_mode);
 
   HAL_Delay(10U);
 
-  /*
-   * Display orientation.
-   */
   LCD_WriteCommand(ST7735_MADCTL);
 
-  LCD_WriteDataByte(0xA0U);
+  uint8_t madctl = 0xA0;
 
-  /*
-   * Disable inversion.
-   */
+  LCD_WriteDataByte(madctl);
+
   LCD_WriteCommand(ST7735_INVOFF);
 
-  /*
-   * Display on.
-   */
   LCD_WriteCommand(ST7735_DISPON);
 
   HAL_Delay(100U);
 
-  /*
-   * Default text state.
-   */
   cursor_x = 0U;
   cursor_y = 0U;
 
@@ -267,16 +227,32 @@ void LCD_Init(void) {
   text_size = 1U;
 
   /*
-   * Start with a clean screen.
+   * Start in the GNSS-lock screen.
    */
-  LCD_FillScreen(LCD_BLACK);
+  gnss_pps_locked = false;
+
+  time_update_pending = false;
+
+  impulse_pending = false;
+
+  impulse_displayed = false;
+
+  impulse_channel = '\0';
+
+  displayed_impulse_channel = '\0';
+
+  impulse_start_tick = 0U;
+
+  impulse_sequence = 0U;
+
+  displayed_impulse_sequence = 0U;
+
+  display_initialised = false;
 }
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * Basic drawing
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 void LCD_DrawPixel(uint16_t x, uint16_t y, uint16_t color) {
   if (x >= LCD_WIDTH || y >= LCD_HEIGHT) {
@@ -309,6 +285,7 @@ void LCD_FillScreen(uint16_t color) {
   }
 
   LCD_CS_Low();
+
   LCD_DC_High();
 
   uint32_t pixel_count = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
@@ -355,6 +332,7 @@ void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
   }
 
   LCD_CS_Low();
+
   LCD_DC_High();
 
   uint16_t remaining = width;
@@ -370,11 +348,9 @@ void LCD_DrawFastHLine(uint16_t x, uint16_t y, uint16_t width, uint16_t color) {
   LCD_CS_High();
 }
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * Text
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 void LCD_SetCursor(uint16_t x, uint16_t y) {
   cursor_x = x;
@@ -382,8 +358,6 @@ void LCD_SetCursor(uint16_t x, uint16_t y) {
 }
 
 void LCD_SetTextColor(uint16_t color) { text_color = color; }
-
-void LCD_SetTextBackground(uint16_t color) { text_background = color; }
 
 void LCD_SetTextSize(uint8_t size) {
   if (size == 0U) {
@@ -393,11 +367,11 @@ void LCD_SetTextSize(uint8_t size) {
   text_size = size;
 }
 
-/*
- * ============================================================
+void LCD_SetTextBackground(uint16_t color) { text_background = color; }
+
+/* --------------------------------------------------------------------------
  * 5x7 font
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 static const uint8_t font5x7[95][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00},
@@ -454,11 +428,9 @@ static const uint8_t font5x7[95][5] = {
     {0x00, 0x00, 0x7F, 0x00, 0x00}, {0x00, 0x41, 0x36, 0x08, 0x00},
     {0x08, 0x04, 0x08, 0x10, 0x08}};
 
-/*
- * ============================================================
+/* --------------------------------------------------------------------------
  * Character drawing
- * ============================================================
- */
+ * -------------------------------------------------------------------------- */
 
 void LCD_WriteChar(char c) {
   if (c < 0x20 || c > 0x7E) {
@@ -471,7 +443,7 @@ void LCD_WriteChar(char c) {
 
   uint16_t height = 7U * text_size;
 
-  static uint8_t pixel_buffer[6U * 8U * 7U * 8U * 2U];
+  static uint8_t pixel_buffer[6 * 8 * 7 * 8 * 2];
 
   if (width > 48U || height > 56U) {
     return;
@@ -504,14 +476,17 @@ void LCD_WriteChar(char c) {
   uint8_t background_low = (uint8_t)(text_background & 0xFFU);
 
   for (uint16_t y = 0U; y < actual_height; y++) {
+
     uint16_t source_y = y / text_size;
 
     for (uint16_t x = 0U; x < actual_width; x++) {
+
       uint16_t source_x = x / text_size;
 
       bool pixel_on = false;
 
       if (source_x < 5U && source_y < 7U) {
+
         pixel_on = (glyph[source_x] & (1U << source_y)) != 0U;
       }
 
@@ -535,23 +510,21 @@ void LCD_WriteChar(char c) {
   cursor_x += width;
 }
 
-/*
- * ============================================================
- * String output
- * ============================================================
- */
-
 void LCD_Print(const char *str) {
   if (str == NULL) {
     return;
   }
 
-  while (*str) {
+  while (*str != '\0') {
+
     if (*str == '\n') {
+
       cursor_x = 0U;
 
       cursor_y += 8U * text_size;
+
     } else {
+
       LCD_WriteChar(*str);
     }
 
@@ -559,18 +532,29 @@ void LCD_Print(const char *str) {
   }
 }
 
-/*
- * ============================================================
- * Application display requests
- * ============================================================
- */
+/* --------------------------------------------------------------------------
+ * GNSS state
+ * -------------------------------------------------------------------------- */
 
-/**
- * @brief Request a PPS UTC time update.
- *
- * Safe to call from an interrupt.
- */
+void LCD_SetGNSSLock(bool locked) {
+  __disable_irq();
+
+  gnss_pps_locked = locked;
+
+  /*
+   * Force the display to redraw when lock state changes.
+   */
+  if (!locked) {
+    display_initialised = false;
+  }
+
+  time_update_pending = true;
+
+  __enable_irq();
+}
+
 void LCD_RequestTimeUpdate(const GNSS_DateTime_t *datetime) {
+
   if (datetime == NULL) {
     return;
   }
@@ -584,14 +568,10 @@ void LCD_RequestTimeUpdate(const GNSS_DateTime_t *datetime) {
   __enable_irq();
 }
 
-/**
- * @brief Request an impulse indication.
- *
- * Safe to call from an interrupt.
- *
- * The actual SPI display operation is deferred until
- * LCD_Process().
- */
+/* --------------------------------------------------------------------------
+ * Timing impulse
+ * -------------------------------------------------------------------------- */
+
 void LCD_RequestImpulse(char channel) {
   if (channel != '1' && channel != '2') {
     return;
@@ -599,86 +579,232 @@ void LCD_RequestImpulse(char channel) {
 
   __disable_irq();
 
+  /*
+   * Replace the current impulse with the new one.
+   *
+   * This means a new impulse immediately becomes
+   * the active display event.
+   */
   impulse_channel = channel;
 
-  impulse_start_time = HAL_GetTick();
+  impulse_start_tick = HAL_GetTick();
+
+  impulse_sequence++;
 
   impulse_pending = true;
+
+  /*
+   * Force LCD_Process() to redraw the impulse.
+   */
+  impulse_displayed = false;
 
   __enable_irq();
 }
 
-/*
- * ============================================================
- * Display rendering
- * ============================================================
- */
+/* --------------------------------------------------------------------------
+ * Display processing
+ * -------------------------------------------------------------------------- */
 
-/**
- * @brief Draw the current PPS-disciplined UTC time.
- */
-static void LCD_DrawTimeScreen(const GNSS_DateTime_t *datetime) {
-  char display_string[32];
+void LCD_Process(void) {
+  GNSS_DateTime_t datetime;
 
-  uint8_t pos = 0U;
+  bool locked;
+  bool impulse;
+  bool update;
 
-  /*
-   * UTC:
-   */
-  display_string[pos++] = 'U';
-  display_string[pos++] = 'T';
-  display_string[pos++] = 'C';
-  display_string[pos++] = ':';
+  char channel;
 
-  display_string[pos++] = '\n';
+  uint32_t impulse_tick;
+  uint32_t sequence;
 
-  /*
-   * DD/MM/YYYY
-   */
-  /* Date: DD/MM/YYYY */
+  __disable_irq();
 
-  display_string[pos++] = (char)('0' + (datetime->date.day / 10U));
+  datetime = display_datetime;
 
-  display_string[pos++] = (char)('0' + (datetime->date.day % 10U));
+  locked = gnss_pps_locked;
 
-  display_string[pos++] = '/';
+  impulse = impulse_pending;
 
-  display_string[pos++] = (char)('0' + (datetime->date.month / 10U));
+  channel = impulse_channel;
 
-  display_string[pos++] = (char)('0' + (datetime->date.month % 10U));
+  impulse_tick = impulse_start_tick;
 
-  display_string[pos++] = '/';
+  sequence = impulse_sequence;
 
-  display_string[pos++] = (char)('0' + ((datetime->date.year / 1000U) % 10U));
+  update = time_update_pending;
 
-  display_string[pos++] = (char)('0' + ((datetime->date.year / 100U) % 10U));
+  time_update_pending = false;
 
-  display_string[pos++] = (char)('0' + ((datetime->date.year / 10U) % 10U));
-
-  display_string[pos++] = (char)('0' + (datetime->date.year % 10U));
-
-  display_string[pos++] = '\n';
+  __enable_irq();
 
   /*
-   * HH:MM:SS
+   * ============================================================
+   * GNSS lock screen
+   * ============================================================
    */
-  display_string[pos++] = '0' + (datetime->time.hours / 10U);
 
-  display_string[pos++] = '0' + (datetime->time.hours % 10U);
+  if (!locked) {
 
-  display_string[pos++] = ':';
+    if (!display_initialised || update) {
 
-  display_string[pos++] = '0' + (datetime->time.minutes / 10U);
+      LCD_FillScreen(LCD_BLACK);
 
-  display_string[pos++] = '0' + (datetime->time.minutes % 10U);
+      LCD_SetTextColor(LCD_RED);
 
-  display_string[pos++] = ':';
+      LCD_SetTextBackground(LCD_BLACK);
 
-  display_string[pos++] = '0' + (datetime->time.seconds / 10U);
+      LCD_SetTextSize(2U);
 
-  display_string[pos++] = '0' + (datetime->time.seconds % 10U);
+      LCD_SetCursor(8U, 45U);
 
-  display_string[pos] = '\0';
+      LCD_Print("GNSS lock\n"
+                "not achieved!");
+
+      display_initialised = true;
+    }
+
+    return;
+  }
+
+  /*
+   * ============================================================
+   * Timing impulse indication
+   * ============================================================
+   */
+
+  if (impulse) {
+
+    uint32_t now = HAL_GetTick();
+
+    /*
+     * Unsigned subtraction handles HAL_GetTick()
+     * rollover correctly.
+     */
+    uint32_t elapsed = (uint32_t)(now - impulse_tick);
+
+    /*
+     * Check that the impulse we copied above is
+     * still the current impulse.
+     *
+     * If a new impulse arrived while we were preparing
+     * the display, abandon this one and let the next
+     * LCD_Process() iteration handle the new impulse.
+     */
+    __disable_irq();
+
+    bool still_current =
+        (impulse_sequence == sequence) && (impulse_channel == channel) &&
+        (impulse_start_tick == impulse_tick) && impulse_pending;
+
+    __enable_irq();
+
+    if (!still_current) {
+      /*
+       * A newer impulse has arrived.
+       *
+       * Do not draw the stale impulse.
+       */
+      return;
+    }
+
+    if (elapsed < LCD_IMPULSE_DISPLAY_MS) {
+
+      /*
+       * Draw only when necessary.
+       *
+       * This prevents flickering from repeatedly
+       * filling the screen.
+       *
+       * The sequence number also means that a new
+       * impulse on the same channel is recognised
+       * as a new event.
+       */
+      if (!impulse_displayed || displayed_impulse_channel != channel ||
+          displayed_impulse_sequence != sequence) {
+
+        LCD_FillScreen(LCD_BLACK);
+
+        LCD_SetTextColor(LCD_YELLOW);
+
+        LCD_SetTextBackground(LCD_BLACK);
+
+        LCD_SetTextSize(2U);
+
+        /*
+         * 160x128 display.
+         */
+        LCD_SetCursor(20U, 35U);
+
+        LCD_Print("IMPULSE ON\n");
+
+        LCD_SetCursor(26U, 60U);
+
+        if (channel == '1') {
+          LCD_Print("CHANNEL 1");
+        } else {
+          LCD_Print("CHANNEL 2");
+        }
+
+        /*
+         * Remember exactly which impulse is visible.
+         */
+        displayed_impulse_channel = channel;
+
+        displayed_impulse_sequence = sequence;
+
+        impulse_displayed = true;
+      }
+
+      return;
+    }
+
+    /*
+     * ========================================================
+     * One second has elapsed.
+     * ========================================================
+     */
+
+    __disable_irq();
+
+    /*
+     * Only clear the impulse if it is still the
+     * exact impulse that we were timing.
+     */
+    if (impulse_pending && impulse_sequence == sequence &&
+        impulse_channel == channel && impulse_start_tick == impulse_tick) {
+
+      impulse_pending = false;
+    }
+
+    __enable_irq();
+
+    impulse_displayed = false;
+
+    displayed_impulse_channel = '\0';
+
+    displayed_impulse_sequence = 0U;
+
+    /*
+     * Fall through to redraw UTC.
+     */
+  }
+
+  /*
+   * ============================================================
+   * UTC display
+   * ============================================================
+   */
+
+  if (!update && !display_initialised) {
+
+    update = true;
+  }
+
+  if (!update) {
+    return;
+  }
+
+  LCD_FillScreen(LCD_BLACK);
 
   LCD_SetTextColor(LCD_CYAN);
 
@@ -686,181 +812,80 @@ static void LCD_DrawTimeScreen(const GNSS_DateTime_t *datetime) {
 
   LCD_SetTextSize(2U);
 
-  LCD_SetCursor(10U, 20U);
-
-  LCD_Print(display_string);
-}
-
-/**
- * @brief Draw the one-second impulse indication.
- */
-static void LCD_DrawImpulseScreen(char channel) {
-  char display_string[32];
-
-  display_string[0] = 'I';
-  display_string[1] = 'M';
-  display_string[2] = 'P';
-  display_string[3] = 'U';
-  display_string[4] = 'L';
-  display_string[5] = 'S';
-  display_string[6] = 'E';
-  display_string[7] = '\n';
-
-  display_string[8] = 'C';
-  display_string[9] = 'H';
-  display_string[10] = 'A';
-  display_string[11] = 'N';
-  display_string[12] = 'N';
-  display_string[13] = 'E';
-  display_string[14] = 'L';
-  display_string[15] = ' ';
-  display_string[16] = channel;
-  display_string[17] = '\0';
-
-  LCD_SetTextColor(LCD_YELLOW);
-
-  LCD_SetTextBackground(LCD_BLACK);
-
-  LCD_SetTextSize(2U);
+  LCD_SetCursor(25U, 20U);
 
   /*
-   * Center the text approximately.
+   * UTC:
    */
-  LCD_SetCursor(10U, 40U);
-
-  LCD_Print(display_string);
-}
-
-/*
- * ============================================================
- * Main LCD processing
- * ============================================================
- */
-
-/**
- * @brief Process pending LCD updates.
- *
- * This function should be called continuously from the main
- * application loop.
- *
- * Example:
- *
- *     while (1)
- *     {
- *         LCD_Process();
- *         ...
- *     }
- */
-void LCD_Process(void) {
-  bool process_impulse = false;
-  bool process_time = false;
-
-  char channel = '\0';
-
-  GNSS_DateTime_t datetime;
+  LCD_Print("UTC:\n");
 
   /*
-   * ========================================================
-   * Check for a new impulse
-   * ========================================================
+   * Date.
+   *
+   * Explicitly construct exactly two digits
+   * for day and month.
    */
+  char date_string[16];
 
-  __disable_irq();
+  date_string[0] = (char)('0' + (datetime.date.day / 10U));
 
-  if (impulse_pending) {
-    impulse_pending = false;
+  date_string[1] = (char)('0' + (datetime.date.day % 10U));
 
-    channel = impulse_channel;
+  date_string[2] = '/';
 
-    process_impulse = true;
-  }
+  date_string[3] = (char)('0' + (datetime.date.month / 10U));
+
+  date_string[4] = (char)('0' + (datetime.date.month % 10U));
+
+  date_string[5] = '/';
+
+  date_string[6] = (char)('0' + ((datetime.date.year / 1000U) % 10U));
+
+  date_string[7] = (char)('0' + ((datetime.date.year / 100U) % 10U));
+
+  date_string[8] = (char)('0' + ((datetime.date.year / 10U) % 10U));
+
+  date_string[9] = (char)('0' + (datetime.date.year % 10U));
+
+  date_string[10] = '\0';
+
+  LCD_Print(date_string);
+
+  LCD_Print("\n");
 
   /*
-   * Copy the latest UTC time.
+   * Time.
    */
-  datetime = display_datetime;
+  char time_string[16];
+
+  time_string[0] = (char)('0' + (datetime.time.hours / 10U));
+
+  time_string[1] = (char)('0' + (datetime.time.hours % 10U));
+
+  time_string[2] = ':';
+
+  time_string[3] = (char)('0' + (datetime.time.minutes / 10U));
+
+  time_string[4] = (char)('0' + (datetime.time.minutes % 10U));
+
+  time_string[5] = ':';
+
+  time_string[6] = (char)('0' + (datetime.time.seconds / 10U));
+
+  time_string[7] = (char)('0' + (datetime.time.seconds % 10U));
+
+  time_string[8] = '\0';
+
+  LCD_Print(time_string);
 
   /*
-   * ========================================================
-   * Check whether impulse display has expired
-   * ========================================================
+   * We are no longer displaying an impulse.
    */
+  impulse_displayed = false;
 
-  bool impulse_active = (current_screen == LCD_SCREEN_IMPULSE);
+  displayed_impulse_channel = '\0';
 
-  uint32_t impulse_time = impulse_start_time;
+  displayed_impulse_sequence = 0U;
 
-  __enable_irq();
-
-  /*
-   * New impulse takes priority over everything.
-   */
-  if (process_impulse) {
-    /*
-     * Start/restart the one-second indication.
-     */
-    LCD_FillScreen(LCD_BLACK);
-
-    LCD_DrawImpulseScreen(channel);
-
-    current_screen = LCD_SCREEN_IMPULSE;
-
-    return;
-  }
-
-  /*
-   * ========================================================
-   * Impulse timeout
-   * ========================================================
-   */
-
-  if (impulse_active) {
-    uint32_t now = HAL_GetTick();
-
-    if ((now - impulse_time) >= LCD_IMPULSE_DISPLAY_MS) {
-      /*
-       * One second has elapsed.
-       *
-       * Return to the latest PPS UTC time.
-       */
-      LCD_FillScreen(LCD_BLACK);
-
-      LCD_DrawTimeScreen(&datetime);
-
-      current_screen = LCD_SCREEN_TIME;
-
-      return;
-    }
-
-    /*
-     * Still displaying the impulse.
-     */
-    return;
-  }
-
-  /*
-   * ========================================================
-   * Normal UTC time update
-   * ========================================================
-   */
-
-  __disable_irq();
-
-  if (time_update_pending) {
-    time_update_pending = false;
-
-    datetime = display_datetime;
-
-    process_time = true;
-  }
-
-  __enable_irq();
-
-  if (process_time) {
-    LCD_FillScreen(LCD_BLACK);
-
-    LCD_DrawTimeScreen(&datetime);
-
-    current_screen = LCD_SCREEN_TIME;
-  }
+  display_initialised = true;
 }
